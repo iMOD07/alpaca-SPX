@@ -1,0 +1,58 @@
+-- ========================================
+-- 1 Create the database (as Postgres)
+-- ========================================
+CREATE DATABASE alpaca_bot_spx
+    WITH OWNER = postgres
+    ENCODING 'UTF8'
+    TEMPLATE template0
+    LC_COLLATE = 'en_US.utf8'
+    LC_CTYPE = 'en_US.utf8';
+
+-- ========================================
+-- 2 Creating the user application
+-- ========================================
+CREATE ROLE imod98 WITH
+    LOGIN
+    PASSWORD 'rrRR@@102030'
+    NOSUPERUSER
+    NOCREATEDB
+    NOCREATEROLE
+    NOINHERIT;
+
+-- ========================================
+-- 3 Granting full authority
+-- ========================================
+GRANT CONNECT, CREATE, TEMP ON DATABASE alpaca_bot_spx TO imod98;
+
+\connect alpaca_bot_spx;
+
+
+GRANT USAGE, CREATE ON SCHEMA public TO imod98;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO imod98;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO imod98;
+
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT ALL ON TABLES TO imod98;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT ALL ON SEQUENCES TO imod98;
+
+-- ========================================
+-- 4 Creating the basic table
+-- ========================================
+CREATE TABLE IF NOT EXISTS app_settings (
+    id SERIAL PRIMARY KEY,
+    ai_enabled BOOLEAN NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+
+-- ========================================
+-- 5 Default Seed (at least one row)
+-- ========================================
+INSERT INTO app_settings (ai_enabled, updated_at)
+VALUES (true, NOW());
+-- ========================================
+-- Quick check
+-- ========================================
+SELECT * FROM app_settings;

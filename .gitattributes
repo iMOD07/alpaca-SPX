@@ -1,0 +1,61 @@
+###############################################################################
+# Default behavior: normalize all text files with LF line endings
+###############################################################################
+* text=auto eol=lf
+
+###############################################################################
+# Executables and wrappers
+###############################################################################
+/mvnw        text eol=lf
+/gradlew     text eol=lf
+mvnw.cmd     text eol=crlf
+gradlew.bat  text eol=crlf
+
+# Shell scripts
+*.sh         text eol=lf
+
+# Windows scripts
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+*.ps1        text eol=crlf
+
+###############################################################################
+# Source code and config files
+###############################################################################
+*.java       text diff=java
+*.kt         text
+*.groovy     text
+
+*.properties text
+*.yml        text
+*.yaml       text
+*.xml        text
+
+*.json       text
+*.md         text
+*.txt        text
+*.csv        text
+
+###############################################################################
+# Binary files (never modify line endings, no diff)
+###############################################################################
+*.class      binary
+*.jar        binary
+*.war        binary
+*.ear        binary
+
+*.so         binary
+*.dll        binary
+*.dylib      binary
+*.exe        binary
+
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.ico        binary
+*.pdf        binary
+*.zip        binary
+*.gz         binary
+*.7z         binary
+*.tar        binary

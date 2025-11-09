@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Spring Boot defaults: enables %clr, %highlight, etc. -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Base one-line pattern -->
+    <property name="BASE_PATTERN" value="%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr(%logger{36}){cyan} : %msg%n%ex{short}"/>
+
+    <!-- Default console -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${BASE_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- API (green) -->
+    <appender name="API" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr( 🌐 API 🌐 ){green} %clr(%logger{36}){green} : %msg%n%ex{short}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Telegram (yellow) -->
+    <appender name="TELEGRAM" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr(📩 TELEGRAM 📩 ){yellow} %clr(%logger{36}){yellow} : %msg%n%ex{short}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Trade (blue) -->
+    <appender name="TRADE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr( 💹 TRADE 💹 ){blue} %clr(%logger{36}){blue} : %msg%n%ex{short}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- SQL (magenta) -->
+    <appender name="SQL" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr( 🟣 SQL 🟣 ){magenta} %clr(%logger{36}){magenta} : %msg%n%ex{short}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Route packages to colored appenders (adjust packages if needed) -->
+    <logger name="com.mod98.alpaca.tradingbot.web" level="DEBUG" additivity="false">
+        <appender-ref ref="API"/>
+    </logger>
+    <logger name="com.mod98.alpaca.tradingbot.telegram" level="DEBUG" additivity="false">
+        <appender-ref ref="TELEGRAM"/>
+    </logger>
+    <logger name="com.mod98.alpaca.tradingbot.Parsing" level="DEBUG" additivity="false">
+        <appender-ref ref="TRADE"/>
+    </logger>
+    <logger name="org.hibernate.SQL" level="DEBUG" additivity="false">
+        <appender-ref ref="SQL"/>
+    </logger>
+    <logger name="org.hibernate.type.descriptor.sql" level="TRACE" additivity="false">
+        <appender-ref ref="SQL"/>
+    </logger>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>
