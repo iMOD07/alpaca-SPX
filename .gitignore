@@ -16,6 +16,8 @@ target/
 
 # Environment files
 .env
+*.env
+.env.*
 
 # Telegram session (TDLight)
 tdlight-session/
