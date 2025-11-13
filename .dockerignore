@@ -1,0 +1,9 @@
+.git
+target
+.mvn
+**/*.iml
+.idea
+Dockerfile*
+docker-compose*.yml
+.env
+tdlight-session

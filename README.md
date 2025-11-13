@@ -1,1 +1,1 @@
-# alpaca-SPX
+# alpaca-spx

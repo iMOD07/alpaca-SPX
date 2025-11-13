@@ -60,13 +60,16 @@ public class TelegramLoginService {
             log.info("Telegram TDLight client started — waiting for authorization…");
 
         } catch (Throwable t) {
-            log.error("Failed to launch the Telegram client for login purposes", t);
-            throw new RuntimeException(t);
+            log.error("Failed to launch the Telegram client for login purposes. API will continue without Telegram.", t);
         }
     }
 
     private Path ensureSessionDirs(String sessionDir) throws Exception {
-        Path base = Paths.get(sessionDir).toAbsolutePath();
+        String dir = (sessionDir == null || sessionDir.isBlank())
+                ? "tdlight-session"
+                : sessionDir;
+
+        Path base = Paths.get(dir).toAbsolutePath();
         // Create base, db, files
         Files.createDirectories(base.resolve("db"));
         Files.createDirectories(base.resolve("files"));

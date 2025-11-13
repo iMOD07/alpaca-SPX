@@ -1,0 +1,36 @@
+name: 🚀 Build & Deploy SPX to AWS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u imod07 --password-stdin
+
+      - name: Build Docker image
+        run: docker build -t ghcr.io/imod07/alpaca-spx:latest .
+
+      - name: Push Docker image
+        run: docker push ghcr.io/imod07/alpaca-spx:latest
+
+      - name: SSH to AWS & update container
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /opt/spx
+            docker compose down
+            docker compose pull
+            docker compose up -d --build
+            docker system prune -f
