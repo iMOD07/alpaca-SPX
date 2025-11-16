@@ -21,7 +21,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # image: ${IMAGE_NAME}   # <-- احذفها محليًا لتجنب أي لخبطة
     container_name: spx_app
     restart: unless-stopped
     depends_on:
@@ -43,7 +42,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - td_session:/tdlight-session
+      - ./tdlight-session:/tdlight-session
 
 volumes:
   spx_db_data:
