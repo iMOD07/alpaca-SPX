@@ -8,6 +8,12 @@ RUN mvn -q -DskipTests package
 
 # ===== Runtime stage =====
 FROM eclipse-temurin:21-jre
+
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV TZ=Asia/Riyadh \
     JAVA_OPTS=""
 WORKDIR /app

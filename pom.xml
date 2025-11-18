@@ -50,21 +50,13 @@
 
     <dependencies>
 
-        <!--  Native libs (Mac + Docker ARM) -->
-        <dependency>
-            <groupId>it.tdlight</groupId>
-            <artifactId>tdlight-natives</artifactId>
-            <classifier>linux_arm64_gnu_ssl3</classifier>
-            <scope>runtime</scope>
-        </dependency>
-
-        <!-- For linux_amd64_gnu_ssl1
+        <!-- Native libs (Ubuntu x64) -->
         <dependency>
             <groupId>it.tdlight</groupId>
             <artifactId>tdlight-natives</artifactId>
             <classifier>linux_amd64_gnu_ssl1</classifier>
             <scope>runtime</scope>
-        </dependency> -->
+        </dependency>
 
         <dependency>
             <groupId>it.tdlight</groupId>
