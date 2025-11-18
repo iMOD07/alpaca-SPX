@@ -43,7 +43,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./tdlight-session:/tdlight-session
+      - ../tdlight-session:/tdlight-session
 
 volumes:
   spx_db_data:
