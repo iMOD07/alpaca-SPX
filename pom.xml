@@ -50,19 +50,27 @@
 
     <dependencies>
 
-        <!-- Native libs (Ubuntu x64) -->
+
+        <!-- Native libs (Linux ARM64) -->
         <dependency>
             <groupId>it.tdlight</groupId>
             <artifactId>tdlight-natives</artifactId>
-            <classifier>linux_amd64_gnu_ssl1</classifier>
+            <classifier>linux_arm64_gnu_ssl3</classifier>
             <scope>runtime</scope>
         </dependency>
 
+        <!-- For mac -->
         <dependency>
             <groupId>it.tdlight</groupId>
             <artifactId>tdlight-natives</artifactId>
             <classifier>macos_arm64</classifier>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- TDLight Java API -->
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-java</artifactId>
         </dependency>
 
         <!-- Core Spring -->
@@ -103,11 +111,6 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- TDLight Java API -->
-        <dependency>
-            <groupId>it.tdlight</groupId>
-            <artifactId>tdlight-java</artifactId>
-        </dependency>
 
         <!-- dotenv -->
         <dependency>
