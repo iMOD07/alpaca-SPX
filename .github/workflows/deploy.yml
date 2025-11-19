@@ -19,7 +19,15 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          echo "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts || true
+
+      - name: Test SSH connection
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          echo "Testing SSH to $SSH_USER@$SSH_HOST ..."
+          ssh -v -o StrictHostKeyChecking=no -p "${SSH_PORT:-22}" "$SSH_USER@$SSH_HOST" "echo 'SSH OK'"
 
       - name: Deploy to EC2
         env:
@@ -33,8 +41,10 @@ jobs:
             echo ">>> cd to app directory"
             cd /home/ubuntu/alpaca-SPX
 
-            echo ">>> git pull origin main"
+            echo ">>> git fetch origin main"
             git fetch origin main
+
+            echo ">>> git reset --hard origin/main"
             git reset --hard origin/main
 
             echo ">>> Build with Maven"
