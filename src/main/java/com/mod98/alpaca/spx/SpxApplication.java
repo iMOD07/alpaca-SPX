@@ -17,5 +17,7 @@ public class SpxApplication {
         dotenv.entries().forEach(e -> System.setProperty(e.getKey(), e.getValue()));
 
         SpringApplication.run(SpxApplication.class, args);
+
+        System.out.println("test add new branch");
     }
 }
