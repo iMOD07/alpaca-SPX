@@ -1,36 +1,61 @@
-name: 🚀 Build & Deploy SPX to AWS
+name: Deploy to AWS EC2
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch: {}
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to GitHub Container Registry
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u imod07 --password-stdin
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts || true
 
-      - name: Build Docker image
-        run: docker build -t ghcr.io/imod07/alpaca-spx:latest .
+      - name: Deploy to EC2
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -p "${SSH_PORT:-22}" "$SSH_USER@$SSH_HOST" << 'EOF'
+            set -e
 
-      - name: Push Docker image
-        run: docker push ghcr.io/imod07/alpaca-spx:latest
+            echo ">>> cd to app directory"
+            cd /home/ubuntu/alpaca-SPX
 
-      - name: SSH to AWS & update container
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            cd /opt/spx
-            docker compose down
-            docker compose pull
-            docker compose up -d --build
-            docker system prune -f
+            echo ">>> git pull origin main"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo ">>> Build with Maven"
+            mvn clean package -DskipTests
+
+            echo ">>> Stop old Java process if exists"
+            PID=$(pgrep -f 'java .*SNAPSHOT.jar' || true)
+            if [ -n "$PID" ]; then
+              echo "Stopping PID $PID"
+              kill $PID || true
+              sleep 5
+            fi
+
+            echo ">>> Start new JAR in background"
+            JAR_FILE=$(ls target/*SNAPSHOT.jar | head -n 1)
+            if [ -z "$JAR_FILE" ]; then
+              echo "ERROR: No JAR file found in target/"
+              exit 1
+            fi
+
+            nohup java -jar "$JAR_FILE" > app.log 2>&1 &
+
+            echo "Deployment done. App should be running on port 8080."
+          EOF
