@@ -29,7 +29,7 @@ jobs:
           echo "Testing SSH to $SSH_USER@$SSH_HOST ..."
           ssh -v -o StrictHostKeyChecking=no -p "${SSH_PORT:-22}" "$SSH_USER@$SSH_HOST" "echo 'SSH OK'"
 
-      - name: Deploy to EC2
+      - name: Deploy to EC2 using systemd
         env:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -41,31 +41,23 @@ jobs:
             echo ">>> cd to app directory"
             cd /home/ubuntu/alpaca-SPX
 
-            echo ">>> git fetch origin main"
+            echo ">>> fetch latest code"
             git fetch origin main
 
-            echo ">>> git reset --hard origin/main"
+            echo ">>> reset to latest commit"
             git reset --hard origin/main
 
-            echo ">>> Build with Maven"
+            echo ">>> build jar with Maven"
             mvn clean package -DskipTests
 
-            echo ">>> Stop old Java process if exists"
-            PID=$(pgrep -f 'java .*SNAPSHOT.jar' || true)
-            if [ -n "$PID" ]; then
-              echo "Stopping PID $PID"
-              kill $PID || true
-              sleep 5
-            fi
+            echo ">>> reload systemd (in case the .service file changed)"
+            sudo systemctl daemon-reload
 
-            echo ">>> Start new JAR in background"
-            JAR_FILE=$(ls target/*SNAPSHOT.jar | head -n 1)
-            if [ -z "$JAR_FILE" ]; then
-              echo "ERROR: No JAR file found in target/"
-              exit 1
-            fi
+            echo ">>> restart SPX service"
+            sudo systemctl restart spx
 
-            nohup java -jar "$JAR_FILE" > app.log 2>&1 &
+            echo ">>> check service status"
+            sudo systemctl status spx --no-pager || true
 
-            echo "Deployment done. App should be running on port 8080."
+            echo "Deployment completed."
           EOF
