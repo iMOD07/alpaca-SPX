@@ -11,4 +11,3 @@ public class HomeController {
         return "SPX App is running successfully on port 8080 .. ✅✅✅ ";
     }
 }
-

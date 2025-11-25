@@ -1,13 +1,15 @@
 package com.mod98.alpaca.spx.parsing;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import okhttp3.*;
 import org.springframework.stereotype.Service;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 @Service
 public class ImageAnalysisServiceImpl implements ImageAnalysisService {
@@ -22,31 +24,47 @@ public class ImageAnalysisServiceImpl implements ImageAnalysisService {
     }
 
     private static final String PROMPT = """
-        You are a trading signal image parser.
+    You are a trading signal image parser for a Telegram channel.
 
-        Analyze the image and return ONLY JSON with this structure:
-        {
-          "imageRole": "PREPARE | ENTRY | IGNORE",
-          "contractCount": number,
-          "entryPrice": number or null,
-          "direction": "LONG | SHORT | UNKNOWN",
-          "confidence": number,
-          "notes": "any extra notes"
-        }
+    There are two useful image roles for us:
 
-        Rules:
-        - imageRole = "PREPARE" if the image shows multiple contracts / setups (preparation image).
-        - imageRole = "ENTRY" if the image shows a single clear contract to enter now.
-        - imageRole = "IGNORE" if the image is unrelated or cannot be parsed as a signal.
-        - contractCount = how many contracts are shown in the image.
-        - entryPrice = detected entry price for the main contract, or null if unknown.
-        - direction = "LONG" for buy/UP, "SHORT" for sell/DOWN, "UNKNOWN" if unclear.
-        - confidence = float between 0 and 1.
-        - notes = short english notes.
+    1) PREPARE:
+       - The image shows multiple potential contracts or setups.
+       - This is just "prepare", we do NOT open a trade yet.
+       - The bot should only switch to a waiting state.
 
-        Output:
-        - JSON ONLY, no explanations, no markdown, no extra text.
-        """;
+    2) ENTRY:
+       - The image shows a single clear contract with ONE main entry price.
+       - After a PREPARE image, the FIRST ENTRY image is the actual entry signal.
+       - Any later images with the same contract and slightly changed prices
+         should be considered ENTRY as well, but the bot will ignore them
+         because it already entered the trade from the first ENTRY image.
+
+    If the image is not related to trading signals, or cannot be understood, use IGNORE.
+
+    Return ONLY JSON with this structure:
+    {
+      "imageRole": "PREPARE | ENTRY | IGNORE",
+      "contractCount": number,
+      "entryPrice": number or null,
+      "direction": "LONG | SHORT | UNKNOWN",
+      "confidence": number,
+      "notes": "any extra notes"
+    }
+
+    Rules:
+    - imageRole = "PREPARE" if the image shows multiple contracts / setups.
+    - imageRole = "ENTRY" if the image shows a single clear contract and price.
+    - imageRole = "IGNORE" otherwise.
+    - contractCount = how many contracts are shown.
+    - entryPrice = main entry price (for ENTRY images) or null.
+    - direction = "LONG" for buy/UP, "SHORT" for sell/DOWN, "UNKNOWN" if unclear.
+    - confidence = float between 0 and 1.
+    - notes = short english notes.
+
+    Output:
+    - JSON ONLY, no explanations, no markdown, no extra text.
+    """;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final OkHttpClient http = new OkHttpClient();

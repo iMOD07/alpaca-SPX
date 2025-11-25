@@ -1,4 +1,5 @@
 package com.mod98.alpaca.spx.service;
+import com.mod98.alpaca.spx.bot.BotStateService;
 import com.mod98.alpaca.spx.config.TelegramProperties;
 import com.mod98.alpaca.spx.parsing.ImageAnalysisResult;
 import com.mod98.alpaca.spx.parsing.ImageAnalysisService;
@@ -23,10 +24,16 @@ public class TelegramLoginService {
     private final ImageAnalysisService imageAnalysisService;
     private SimpleTelegramClientFactory factory;
     private SimpleTelegramClient client;
+    private final BotStateService botStateService;
 
-    public TelegramLoginService(TelegramProperties props, ImageAnalysisService imageAnalysisService) {
+    public TelegramLoginService(
+            TelegramProperties props,
+            ImageAnalysisService imageAnalysisService,
+            BotStateService botStateService)
+    {
         this.props = props;
         this.imageAnalysisService = imageAnalysisService;
+        this.botStateService = botStateService;
     }
 
     @PostConstruct
@@ -48,7 +55,7 @@ public class TelegramLoginService {
             // 3.a) Authorization flow
             builder.addUpdateHandler(TdApi.UpdateAuthorizationState.class, this::onAuthUpdate);
             builder.addUpdateHandler(TdApi.UpdateNewMessage.class, this::onNewMessage);
-            builder.addUpdateHandler(TdApi.UpdateFile.class, this::onFileUpdate); // 👈 جديدة
+            builder.addUpdateHandler(TdApi.UpdateFile.class, this::onFileUpdate);
 
             // 3.b) Connection-state logs (useful for 24/7 bots)
             builder.addUpdateHandler(TdApi.UpdateConnectionState.class, u ->
@@ -169,6 +176,7 @@ public class TelegramLoginService {
                     result.getContractCount(),
                     result.getDirection()
             );
+            botStateService.handleImage(result);
 
             // Here we delete the image because we no longer need it
             try {
