@@ -1,6 +1,7 @@
 package com.mod98.alpaca.spx.service;
-
 import com.mod98.alpaca.spx.config.TelegramProperties;
+import com.mod98.alpaca.spx.parsing.ImageAnalysisResult;
+import com.mod98.alpaca.spx.parsing.ImageAnalysisService;
 import it.tdlight.client.*;
 import it.tdlight.jni.TdApi;
 import jakarta.annotation.PostConstruct;
@@ -8,7 +9,6 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -20,12 +20,13 @@ public class TelegramLoginService {
     private static final Logger log = LoggerFactory.getLogger(TelegramLoginService.class);
 
     private final TelegramProperties props;
-
+    private final ImageAnalysisService imageAnalysisService;
     private SimpleTelegramClientFactory factory;
     private SimpleTelegramClient client;
 
-    public TelegramLoginService(TelegramProperties props) {
+    public TelegramLoginService(TelegramProperties props, ImageAnalysisService imageAnalysisService) {
         this.props = props;
+        this.imageAnalysisService = imageAnalysisService;
     }
 
     @PostConstruct
@@ -46,6 +47,8 @@ public class TelegramLoginService {
 
             // 3.a) Authorization flow
             builder.addUpdateHandler(TdApi.UpdateAuthorizationState.class, this::onAuthUpdate);
+            builder.addUpdateHandler(TdApi.UpdateNewMessage.class, this::onNewMessage);
+            builder.addUpdateHandler(TdApi.UpdateFile.class, this::onFileUpdate); // 👈 جديدة
 
             // 3.b) Connection-state logs (useful for 24/7 bots)
             builder.addUpdateHandler(TdApi.UpdateConnectionState.class, u ->
@@ -116,6 +119,66 @@ public class TelegramLoginService {
 
         } else {
             log.info("Authorization: Unexpected state: {}", st.getClass().getSimpleName());
+        }
+    }
+
+    private void onNewMessage(TdApi.UpdateNewMessage upd) {
+
+        TdApi.Message msg = upd.message;
+
+        if (msg.chatId != -5005203628L) { // 5005203628
+            return;
+        }
+
+        if (!(msg.content instanceof TdApi.MessagePhoto photoMsg)) {
+            return;
+        }
+
+        TdApi.PhotoSize size = photoMsg.photo.sizes[photoMsg.photo.sizes.length - 1];
+        int fileId = size.photo.id;
+
+        log.info("📸 Received photo with fileId: {}", fileId);
+
+        // We only request the download (no callback)
+        TdApi.DownloadFile df = new TdApi.DownloadFile(fileId, 32, 0, 0, true);
+        client.send(df);
+
+        log.info("📥 Requested download for fileId={}", fileId);
+    }
+
+
+    private void onFileUpdate(TdApi.UpdateFile upd) {
+        log.info("🔥 UpdateFile event received, fileId=" + upd.file.id);
+        TdApi.File file = upd.file;
+
+        // We make sure the download is complete.
+        if (!file.local.isDownloadingCompleted) {
+            return;
+        }
+
+        String localPath = file.local.path;
+        log.info("📥 Photo downloaded to: {}", localPath);
+
+        try {
+            //Image analysis using OpenAI
+            ImageAnalysisResult result = imageAnalysisService.analyze(Path.of(localPath));
+
+            log.warn("📊 Analysis: role={}, price={}, contracts={}, direction={}",
+                    result.getImageRole(),
+                    result.getEntryPrice(),
+                    result.getContractCount(),
+                    result.getDirection()
+            );
+
+            // Here we delete the image because we no longer need it
+            try {
+                Files.deleteIfExists(Path.of(localPath));
+                log.info("🗑️ Deleted image file after analysis: {}", localPath);
+            } catch (Exception ex) {
+                log.warn("⚠️ Failed to delete file: {}", localPath);
+            }
+        } catch (Exception e) {
+            log.error("❌ Failed to analyze image {}: {}", localPath, e.getMessage(), e);
         }
     }
 
