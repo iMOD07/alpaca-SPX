@@ -1,8 +1,6 @@
 package com.mod98.alpaca.spx.service;
-import com.mod98.alpaca.spx.bot.BotStateService;
+
 import com.mod98.alpaca.spx.config.TelegramProperties;
-import com.mod98.alpaca.spx.parsing.ImageAnalysisResult;
-import com.mod98.alpaca.spx.parsing.ImageAnalysisService;
 import it.tdlight.client.*;
 import it.tdlight.jni.TdApi;
 import jakarta.annotation.PostConstruct;
@@ -21,19 +19,11 @@ public class TelegramLoginService {
     private static final Logger log = LoggerFactory.getLogger(TelegramLoginService.class);
 
     private final TelegramProperties props;
-    private final ImageAnalysisService imageAnalysisService;
     private SimpleTelegramClientFactory factory;
     private SimpleTelegramClient client;
-    private final BotStateService botStateService;
 
-    public TelegramLoginService(
-            TelegramProperties props,
-            ImageAnalysisService imageAnalysisService,
-            BotStateService botStateService)
-    {
+    public TelegramLoginService(TelegramProperties props) {
         this.props = props;
-        this.imageAnalysisService = imageAnalysisService;
-        this.botStateService = botStateService;
     }
 
     @PostConstruct
@@ -55,7 +45,6 @@ public class TelegramLoginService {
             // 3.a) Authorization flow
             builder.addUpdateHandler(TdApi.UpdateAuthorizationState.class, this::onAuthUpdate);
             builder.addUpdateHandler(TdApi.UpdateNewMessage.class, this::onNewMessage);
-            builder.addUpdateHandler(TdApi.UpdateFile.class, this::onFileUpdate);
 
             // 3.b) Connection-state logs (useful for 24/7 bots)
             builder.addUpdateHandler(TdApi.UpdateConnectionState.class, u ->
@@ -153,42 +142,6 @@ public class TelegramLoginService {
         log.info("📥 Requested download for fileId={}", fileId);
     }
 
-
-    private void onFileUpdate(TdApi.UpdateFile upd) {
-        log.info("🔥 UpdateFile event received, fileId=" + upd.file.id);
-        TdApi.File file = upd.file;
-
-        // We make sure the download is complete.
-        if (!file.local.isDownloadingCompleted) {
-            return;
-        }
-
-        String localPath = file.local.path;
-        log.info("📥 Photo downloaded to: {}", localPath);
-
-        try {
-            //Image analysis using OpenAI
-            ImageAnalysisResult result = imageAnalysisService.analyze(Path.of(localPath));
-
-            log.warn("📊 Analysis: role={}, price={}, contracts={}, direction={}",
-                    result.getImageRole(),
-                    result.getEntryPrice(),
-                    result.getContractCount(),
-                    result.getDirection()
-            );
-            botStateService.handleImage(result);
-
-            // Here we delete the image because we no longer need it
-            try {
-                Files.deleteIfExists(Path.of(localPath));
-                log.info("🗑️ Deleted image file after analysis: {}", localPath);
-            } catch (Exception ex) {
-                log.warn("⚠️ Failed to delete file: {}", localPath);
-            }
-        } catch (Exception e) {
-            log.error("❌ Failed to analyze image {}: {}", localPath, e.getMessage(), e);
-        }
-    }
 
     @PreDestroy
     public void stop() {
