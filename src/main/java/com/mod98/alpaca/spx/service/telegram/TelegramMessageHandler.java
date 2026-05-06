@@ -17,14 +17,19 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Pipeline:
+ * Pipeline (shape-aware):
  *   1. Idempotency
- *   2. Extract context + image path
- *   3. OCR (if image)
- *   4. Merge OCR text + caption
- *   5. FastClassifier (rule-based — fast & free for clear patterns)
- *   6. If fast didn't classify → AiSignalParser (with prior-deal context + few-shot)
- *   7. Dispatch
+ *   2. Extract caption + image path (separated)
+ *   3. OCR on image (if any)
+ *   4. FastClassifier(caption, ocr, hasImage, msgId, replyTo) — يفصل intent عن data
+ *   5. If FastClassifier didn't decide → AiSignalParser (uses merged text + context)
+ *   6. Dispatch
+ *
+ * القاعدة: caption و OCR لا يُدمَجان في string واحد قبل classification.
+ * كل واحد له دور:
+ *   - caption  = INTENT (action keyword)
+ *   - OCR      = DATA (contract/price)
+ *   - replyTo  = CONTEXT
  */
 @Slf4j
 @Service
@@ -49,16 +54,17 @@ public class TelegramMessageHandler {
             if (!idempotency.tryAcquire(messageId)) return;
 
             TelegramSignalContext ctx = extractor.extract(msg, imagePath);
-            String captionBody = ctx.getBodyText() == null ? "" : ctx.getBodyText().trim();
+            String caption = ctx.getBodyText() == null ? "" : ctx.getBodyText().trim();
+            boolean hasImage = ctx.isHasImage();
 
-            if (captionBody.isBlank() && !ctx.isHasImage()) {
+            if (caption.isBlank() && !hasImage) {
                 log.debug("Empty message — skip");
                 return;
             }
 
-            // OCR on attached image (if any)
+            // OCR على الصورة (إن وجدت)
             String ocrText = "";
-            if (ctx.isHasImage() && imagePath != null && !imagePath.isBlank()) {
+            if (hasImage && imagePath != null && !imagePath.isBlank()) {
                 try {
                     byte[] bytes = imageService.loadImageBytes(imagePath);
                     ocrText = ocrService.extractText(bytes);
@@ -68,15 +74,12 @@ public class TelegramMessageHandler {
                 }
             }
 
-            String mergedBody = (ocrText + "\n" + captionBody).trim();
-            ctx.setBodyText(mergedBody);
-            ctx.setFullText((ctx.getHeaderText() + "\n\n" + mergedBody).trim());
-            ctx.setHasImage(false);
-            ctx.setImagePath(null);
-
-            // STAGE 1 — Fast rule-based classifier
+            // STAGE 1 — Shape-aware FastClassifier
+            // ⚠️ caption و ocrText يُمرَّران منفصلين — لا يُدمَجان قبل الـ shape analysis
             ParsedSignal signal = fastClassifier.tryClassify(
-                    ctx.getFullText(),
+                    caption,
+                    ocrText,
+                    hasImage,
                     ctx.getMessageId(),
                     ctx.getReplyToMessageId());
 
@@ -85,7 +88,13 @@ public class TelegramMessageHandler {
                 log.info("⚡ FAST classifier matched | type={} latencyMs={}",
                         signal.getSignalType(), t);
             } else {
-                // STAGE 2 — AI parser
+                // STAGE 2 — AI parser fallback (يستخدم النص المدموج + context)
+                String mergedForAi = (ocrText + "\n" + caption).trim();
+                ctx.setBodyText(mergedForAi);
+                ctx.setFullText(mergedForAi);
+                ctx.setHasImage(false);   // الصورة استُهلكت
+                ctx.setImagePath(null);
+
                 signal = aiSignalParser.parse(ctx);
                 long t = Duration.between(start, Instant.now()).toMillis();
                 if (signal != null) {
