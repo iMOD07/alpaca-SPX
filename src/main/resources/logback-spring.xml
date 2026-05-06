@@ -1,114 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <!-- Spring Boot defaults: enables %clr, %highlight, etc. -->
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 
-    <!-- Base one-line pattern -->
-    <property name="BASE_PATTERN" value="%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr(%logger{36}){cyan} : %msg%n%ex{short}"/>
+    <springProperty name="appName" source="spring.application.name" defaultValue="SPX"/>
 
-    <!-- Default console -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>${BASE_PATTERN}</pattern>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %X{messageId:-} %X{dealId:-} %logger{36} - %msg%n%ex{short}</pattern>
         </encoder>
     </appender>
 
-    <!-- API (green) -->
-    <appender name="API" class="ch.qos.logback.core.ConsoleAppender">
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/spx-bot.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/spx-bot-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
         <encoder>
-            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr( 🌐 API 🌐 ){green} %clr(%logger{36}){green} : %msg%n%ex{short}</pattern>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %X - %logger{36} - %msg%n%ex</pattern>
         </encoder>
     </appender>
-
-    <!-- Telegram (yellow) -->
-    <appender name="TELEGRAM" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr(📩 TELEGRAM 📩 ){yellow} %clr(%logger{36}){yellow} : %msg%n%ex{short}</pattern>
-        </encoder>
-    </appender>
-
-    <!-- Trade (blue) -->
-    <appender name="TRADE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr( 💹 TRADE 💹 ){blue} %clr(%logger{36}){blue} : %msg%n%ex{short}</pattern>
-        </encoder>
-    </appender>
-
-    <!-- SQL (magenta) -->
-    <appender name="SQL" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %highlight(%-5level) %clr([%thread]){faint} %clr( 🟣 SQL 🟣 ){magenta} %clr(%logger{36}){magenta} : %msg%n%ex{short}</pattern>
-        </encoder>
-    </appender>
-
-    <!-- Route packages to colored appenders (adjust packages if needed) -->
-    <logger name="com.mod98.alpaca.tradingbot.web" level="DEBUG" additivity="false">
-        <appender-ref ref="API"/>
-    </logger>
-    <logger name="com.mod98.alpaca.tradingbot.telegram" level="DEBUG" additivity="false">
-        <appender-ref ref="TELEGRAM"/>
-    </logger>
-    <logger name="com.mod98.alpaca.tradingbot.Parsing" level="DEBUG" additivity="false">
-        <appender-ref ref="TRADE"/>
-    </logger>
-    <logger name="org.hibernate.SQL" level="DEBUG" additivity="false">
-        <appender-ref ref="SQL"/>
-    </logger>
-    <logger name="org.hibernate.type.descriptor.sql" level="TRACE" additivity="false">
-        <appender-ref ref="SQL"/>
-    </logger>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
     </root>
+
+    <logger name="com.mod98.alpaca" level="INFO"/>
+    <logger name="it.tdlight" level="WARN"/>
+    <logger name="org.hibernate.SQL" level="WARN"/>
 </configuration>
-
-
-        <?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-<springProperty name="appName" source="spring.application.name" defaultValue="SPX"/>
-
-<!-- Console: JSON for production, plain for dev. Toggle via SPRING_PROFILES_ACTIVE -->
-<appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
-    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-        <customFields>{"app":"${appName}"}</customFields>
-        <includeMdcKeyName>dealId</includeMdcKeyName>
-        <includeMdcKeyName>orderId</includeMdcKeyName>
-        <includeMdcKeyName>messageId</includeMdcKeyName>
-    </encoder>
-</appender>
-
-<appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
-    <encoder>
-        <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} %X - %msg%n</pattern>
-    </encoder>
-</appender>
-
-<!-- File rolling: keep 14 days of JSON logs for forensic analysis -->
-<appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
-    <file>logs/spx-bot.json</file>
-    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-        <fileNamePattern>logs/spx-bot-%d{yyyy-MM-dd}.%i.json.gz</fileNamePattern>
-        <maxFileSize>50MB</maxFileSize>
-        <maxHistory>14</maxHistory>
-        <totalSizeCap>2GB</totalSizeCap>
-    </rollingPolicy>
-    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-        <customFields>{"app":"${appName}"}</customFields>
-    </encoder>
-</appender>
-
-<springProfile name="prod">
-    <root level="INFO">
-        <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/>
-    </root>
-</springProfile>
-
-<springProfile name="!prod">
-    <root level="INFO">
-        <appender-ref ref="CONSOLE_PLAIN"/>
-    </root>
-</springProfile>
-</configuration>
-

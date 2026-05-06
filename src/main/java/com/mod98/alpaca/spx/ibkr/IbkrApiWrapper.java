@@ -1,25 +1,27 @@
 package com.mod98.alpaca.spx.ibkr;
 
 import com.ib.client.*;
-import com.mod98.alpaca.spx.ibkr.events.OrderStatusEvent;
+import com.ib.client.protobuf.ErrorMessageProto;
+import com.ib.client.protobuf.ExecutionDetailsEndProto;
+import com.ib.client.protobuf.ExecutionDetailsProto;
+import com.ib.client.protobuf.OpenOrderProto;
+import com.ib.client.protobuf.OpenOrdersEndProto;
+import com.ib.client.protobuf.OrderStatusProto;
 import com.mod98.alpaca.spx.ibkr.events.ExecutionEvent;
+import com.mod98.alpaca.spx.ibkr.events.OrderStatusEvent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Production wrapper:
- *  - Snapshot futures (ASK/BID/contractDetails) — لطلبات synchronous.
- *  - Callback events (orderStatus/execDetails/error/connectionClosed) — تنشر Spring events
- *    حتى Services الأخرى تتفاعل asynchronously.
- *  - كل callback من thread الـ ibkr-reader، لا تستدعي blocking I/O داخله.
- */
 @Slf4j
 @Component
-public class IbkrApiWrapper extends IbkrApiWrapperStubs {
+public class IbkrApiWrapper implements EWrapper {
 
     private final ApplicationEventPublisher events;
 
@@ -82,30 +84,36 @@ public class IbkrApiWrapper extends IbkrApiWrapperStubs {
 
     @Override
     public void error(int id, long time, int code, String msg, String advancedReject) {
-        // Informational codes
-        if (code == 2104 || code == 2106 || code == 2107 || code == 2158) {
+        // Informational codes — never break futures
+        if (code == 2103 || code == 2104 || code == 2105 || code == 2106
+                || code == 2107 || code == 2108 || code == 2150 || code == 2158) {
             log.debug("IB INFO | code={} msg={}", code, msg);
             return;
         }
-        // Order rejection codes (200=No security def, 201=rejected, 202=cancelled, 399=warning)
         log.error("IB ERROR | id={} code={} msg={} reject={}", id, code, msg, advancedReject);
 
-        // فشل market data → كمل futures بـ exception
-        CompletableFuture<Double> a = askFutures.remove(id);
-        if (a != null && !a.isDone()) a.completeExceptionally(new RuntimeException("IB error " + code + ": " + msg));
-        CompletableFuture<Double> b = bidFutures.remove(id);
-        if (b != null && !b.isDone()) b.completeExceptionally(new RuntimeException("IB error " + code + ": " + msg));
-
+        // فشل market data فقط لو code يدلّ على فشل market data
+        boolean isMdError = (code == 200 || code == 354 || code == 10090
+                || code == 10167 || code == 10168);
+        if (isMdError) {
+            CompletableFuture<Double> a = askFutures.remove(id);
+            if (a != null && !a.isDone()) a.completeExceptionally(new RuntimeException("IB " + code + ": " + msg));
+            CompletableFuture<Double> b = bidFutures.remove(id);
+            if (b != null && !b.isDone()) b.completeExceptionally(new RuntimeException("IB " + code + ": " + msg));
+        }
         events.publishEvent(new IbErrorEvent(id, code, msg));
     }
+
+    @Override public void error(Exception e) { log.error("IB ERROR (Exception)", e); }
+    @Override public void error(String str) { log.error("IB ERROR (String) | {}", str); }
 
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attribs) {
         if (price <= 0) return;
-        if (field == 1) { // BID
+        if (field == 1) {
             CompletableFuture<Double> f = bidFutures.remove(tickerId);
             if (f != null && !f.isDone()) f.complete(price);
-        } else if (field == 2) { // ASK
+        } else if (field == 2) {
             CompletableFuture<Double> f = askFutures.remove(tickerId);
             if (f != null && !f.isDone()) f.complete(price);
         }
@@ -150,11 +158,16 @@ public class IbkrApiWrapper extends IbkrApiWrapperStubs {
         ));
     }
 
+    @Override public void managedAccounts(String accountsList) {
+        log.info("MANAGED ACCOUNTS={}", accountsList);
+    }
+    @Override public void connectAck() { log.info("IB CONNECT ACK"); }
+
     // ===== Local event records =====
     public record ConnectionClosedEvent() {}
     public record IbErrorEvent(int id, int code, String message) {}
 
-    // ============ Stubs (required by your EWrapper) ============
+    // ============ Stubs (required by EWrapper) ============
     @Override public void tickSize(int var1, int var2, Decimal var3) {}
     @Override public void tickOptionComputation(int var1, int var2, int var3, double var4, double var6, double var8, double var10, double var12, double var14, double var16, double var18) {}
     @Override public void tickGeneric(int var1, int var2, double var3) {}
