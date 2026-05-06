@@ -8,9 +8,11 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
@@ -20,6 +22,16 @@ public class IbkrConnectionManager {
 
     private final IbkrApiWrapper wrapper;
     private final IbkrProperties props;
+
+    /**
+     * ⚠️ TESTING ONLY — when true, requests delayed (15-min lag) market data.
+     * Set via property: ibkr.market-data.delayed-fallback=true
+     *
+     * NEVER enable this in production with real money. Delayed prices will
+     * cause incorrect entry/TP/SL decisions.
+     */
+    @Value("${ibkr.market-data.delayed-fallback:false}")
+    private boolean delayedMarketDataFallback;
 
     private volatile EClientSocket client;
     private volatile EReaderSignal signal;
@@ -36,7 +48,8 @@ public class IbkrConnectionManager {
         signal = new EJavaSignal();
         client = new EClientSocket(wrapper, signal);
 
-        log.info("Connecting to IBKR {}:{} clientId={}", props.getHost(), props.getPort(), props.getClientId());
+        log.info("Connecting to IBKR {}:{} clientId={}",
+                props.getHost(), props.getPort(), props.getClientId());
         client.eConnect(props.getHost(), props.getPort(), props.getClientId());
 
         if (!client.isConnected()) {
@@ -62,12 +75,44 @@ public class IbkrConnectionManager {
         readerThread.start();
 
         log.info("IBKR connected ✅");
+
+        // Configure market data type AFTER reader thread is started.
+        configureMarketDataType();
     }
 
     /**
-     * كل 10 ثوان: لو الاتصال ضاع، أعد المحاولة.
-     * IbkrApiWrapper.connectionClosed() ينشر event، لكن نضيف polling كـ safety net.
+     * Sets market data type — must run AFTER nextValidId is received.
+     *
+     * Types:
+     *   1 = LIVE (default; requires subscription)
+     *   2 = FROZEN (last value at market close)
+     *   3 = DELAYED (15-min lag; FREE — testing only)
+     *   4 = DELAYED-FROZEN
      */
+    private void configureMarketDataType() {
+        try {
+            wrapper.nextValidIdFuture().get(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Did not receive nextValidId within 5s — proceeding anyway");
+        }
+
+        if (client == null || !client.isConnected()) {
+            log.warn("Cannot configure market data type — not connected");
+            return;
+        }
+
+        if (delayedMarketDataFallback) {
+            client.reqMarketDataType(3);
+            log.warn("⚠️⚠️⚠️ DELAYED MARKET DATA ENABLED (15-min lag)");
+            log.warn("    FOR TESTING ONLY — DO NOT use with real money");
+            log.warn("    To switch to live: set ibkr.market-data.delayed-fallback=false");
+            log.warn("    Subscribe to OPRA + CBOE for production");
+        } else {
+            client.reqMarketDataType(1);
+            log.info("Market data type: LIVE (subscriptions required)");
+        }
+    }
+
     @Scheduled(fixedDelay = 10_000)
     public void healthCheckAndReconnect() {
         if (shuttingDown.get()) return;
@@ -76,7 +121,6 @@ public class IbkrConnectionManager {
 
         try {
             log.warn("IBKR disconnected — attempting reconnect");
-            // tear down old client
             try {
                 if (client != null) client.eDisconnect();
             } catch (Exception ignore) {}

@@ -68,6 +68,8 @@ public class IbkrApiWrapper implements EWrapper {
     }
 
     // ===== Callbacks =====
+
+    /** ⚠️ EWrapper is an interface — do NOT call super.nextValidId(). */
     @Override
     public void nextValidId(int orderId) {
         log.info("IBKR nextValidId={}", orderId);
@@ -82,20 +84,45 @@ public class IbkrApiWrapper implements EWrapper {
         events.publishEvent(new ConnectionClosedEvent());
     }
 
+    /**
+     * IBKR Error Code Categories:
+     *   - INFO (silent):           2103, 2104, 2105, 2106, 2107, 2108, 2150, 2158
+     *   - DELAYED-DATA WARNINGS:   10090, 10167, 10168   ← NOT fatal! data still arrives
+     *   - CONTRACT/MD FATAL:       200, 354
+     *   - GENERAL FARM RECONNECT:  2119                    (warning only)
+     *
+     * Critical fix: 10090/10167/10168 mean "switching to delayed data" — the delayed
+     * price will arrive in tickPrice() within a few ms. Do NOT break the ASK/BID future.
+     */
     @Override
     public void error(int id, long time, int code, String msg, String advancedReject) {
-        // Informational codes — never break futures
+        // Pure info codes — silent
         if (code == 2103 || code == 2104 || code == 2105 || code == 2106
                 || code == 2107 || code == 2108 || code == 2150 || code == 2158) {
             log.debug("IB INFO | code={} msg={}", code, msg);
             return;
         }
+
+        // Delayed-data warnings — log & DO NOT break futures
+        // The actual delayed tick will follow shortly via tickPrice() field 66/67.
+        if (code == 10090 || code == 10167 || code == 10168) {
+            log.warn("IB DELAYED-DATA NOTICE | id={} code={} msg={}", id, code, msg);
+            // intentionally do NOT touch askFutures/bidFutures — let delayed tick complete them
+            return;
+        }
+
+        // Market-data farm reconnecting — transient, log only
+        if (code == 2119) {
+            log.warn("IB FARM RECONNECT | id={} msg={}", id, msg);
+            return;
+        }
+
+        // Real errors
         log.error("IB ERROR | id={} code={} msg={} reject={}", id, code, msg, advancedReject);
 
-        // فشل market data فقط لو code يدلّ على فشل market data
-        boolean isMdError = (code == 200 || code == 354 || code == 10090
-                || code == 10167 || code == 10168);
-        if (isMdError) {
+        // Fatal MD errors — break futures so caller fails fast
+        boolean isFatalMdError = (code == 200 || code == 354);
+        if (isFatalMdError) {
             CompletableFuture<Double> a = askFutures.remove(id);
             if (a != null && !a.isDone()) a.completeExceptionally(new RuntimeException("IB " + code + ": " + msg));
             CompletableFuture<Double> b = bidFutures.remove(id);
@@ -110,12 +137,20 @@ public class IbkrApiWrapper implements EWrapper {
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attribs) {
         if (price <= 0) return;
-        if (field == 1) {
+        // Live ticks:    1=BID  2=ASK
+        // Delayed ticks: 66=DELAYED_BID  67=DELAYED_ASK
+        if (field == 1 || field == 66) {
             CompletableFuture<Double> f = bidFutures.remove(tickerId);
-            if (f != null && !f.isDone()) f.complete(price);
-        } else if (field == 2) {
+            if (f != null && !f.isDone()) {
+                log.debug("BID tick | tickerId={} field={} price={}", tickerId, field, price);
+                f.complete(price);
+            }
+        } else if (field == 2 || field == 67) {
             CompletableFuture<Double> f = askFutures.remove(tickerId);
-            if (f != null && !f.isDone()) f.complete(price);
+            if (f != null && !f.isDone()) {
+                log.debug("ASK tick | tickerId={} field={} price={}", tickerId, field, price);
+                f.complete(price);
+            }
         }
     }
 
@@ -163,7 +198,18 @@ public class IbkrApiWrapper implements EWrapper {
     }
     @Override public void connectAck() { log.info("IB CONNECT ACK"); }
 
-    // ===== Local event records =====
+    @Override
+    public void marketDataType(int reqId, int type) {
+        String label = switch (type) {
+            case 1 -> "LIVE";
+            case 2 -> "FROZEN";
+            case 3 -> "DELAYED";
+            case 4 -> "DELAYED-FROZEN";
+            default -> "UNKNOWN(" + type + ")";
+        };
+        log.info("MARKET DATA TYPE | reqId={} type={}", reqId, label);
+    }
+
     public record ConnectionClosedEvent() {}
     public record IbErrorEvent(int id, int code, String message) {}
 
@@ -194,7 +240,6 @@ public class IbkrApiWrapper implements EWrapper {
     @Override public void fundamentalData(int var1, String var2) {}
     @Override public void deltaNeutralValidation(int var1, DeltaNeutralContract var2) {}
     @Override public void tickSnapshotEnd(int var1) {}
-    @Override public void marketDataType(int var1, int var2) {}
     @Override public void commissionAndFeesReport(CommissionAndFeesReport var1) {}
     @Override public void position(String var1, Contract var2, Decimal var3, double var4) {}
     @Override public void positionEnd() {}
