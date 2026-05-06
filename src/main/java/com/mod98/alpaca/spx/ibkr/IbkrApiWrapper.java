@@ -1,155 +1,158 @@
 package com.mod98.alpaca.spx.ibkr;
 
 import com.ib.client.*;
-import com.ib.client.protobuf.ErrorMessageProto;
-import com.ib.client.protobuf.ExecutionDetailsEndProto;
-import com.ib.client.protobuf.ExecutionDetailsProto;
-import com.ib.client.protobuf.OpenOrderProto;
-import com.ib.client.protobuf.OpenOrdersEndProto;
-import com.ib.client.protobuf.OrderStatusProto;
+import com.mod98.alpaca.spx.ibkr.events.OrderStatusEvent;
+import com.mod98.alpaca.spx.ibkr.events.ExecutionEvent;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Production wrapper:
+ *  - Snapshot futures (ASK/BID/contractDetails) — لطلبات synchronous.
+ *  - Callback events (orderStatus/execDetails/error/connectionClosed) — تنشر Spring events
+ *    حتى Services الأخرى تتفاعل asynchronously.
+ *  - كل callback من thread الـ ibkr-reader، لا تستدعي blocking I/O داخله.
+ */
 @Slf4j
 @Component
-public class IbkrApiWrapper implements EWrapper {
+public class IbkrApiWrapper extends IbkrApiWrapperStubs {
 
-    // ============ Futures ============
+    private final ApplicationEventPublisher events;
+
+    public IbkrApiWrapper(ApplicationEventPublisher events) {
+        this.events = events;
+    }
+
+    // ===== Snapshot futures =====
     private final CompletableFuture<Integer> nextValidIdFuture = new CompletableFuture<>();
-
     private final ConcurrentHashMap<Integer, CompletableFuture<Double>> askFutures = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, CompletableFuture<Double>> bidFutures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, CompletableFuture<ContractDetails>> contractDetailsFutures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, CompletableFuture<Void>> contractDetailsEndFutures = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Integer, CompletableFuture<Double>> bidFutures = new ConcurrentHashMap<>();
 
-    public CompletableFuture<Double> registerBidFuture(int tickerId) {
-        CompletableFuture<Double> f = new CompletableFuture<>();
-        bidFutures.put(tickerId, f);
-        return f;
-    }
-
-
-    public CompletableFuture<Integer> nextValidIdFuture() {
-        return nextValidIdFuture;
-    }
+    public CompletableFuture<Integer> nextValidIdFuture() { return nextValidIdFuture; }
 
     public CompletableFuture<Double> registerAskFuture(int tickerId) {
         CompletableFuture<Double> f = new CompletableFuture<>();
         askFutures.put(tickerId, f);
         return f;
     }
-
+    public CompletableFuture<Double> registerBidFuture(int tickerId) {
+        CompletableFuture<Double> f = new CompletableFuture<>();
+        bidFutures.put(tickerId, f);
+        return f;
+    }
+    public void unregisterAskBid(int tickerId) {
+        askFutures.remove(tickerId);
+        bidFutures.remove(tickerId);
+    }
     public void registerContractDetailsFuture(int reqId) {
         contractDetailsFutures.put(reqId, new CompletableFuture<>());
         contractDetailsEndFutures.put(reqId, new CompletableFuture<>());
     }
-
     public CompletableFuture<ContractDetails> contractDetailsFuture(int reqId) {
         return contractDetailsFutures.get(reqId);
     }
-
     public CompletableFuture<Void> contractDetailsEndFuture(int reqId) {
         return contractDetailsEndFutures.get(reqId);
     }
+    public void unregisterContractDetails(int reqId) {
+        contractDetailsFutures.remove(reqId);
+        contractDetailsEndFutures.remove(reqId);
+    }
 
-    // ============ Required callbacks we use ============
-
+    // ===== Callbacks =====
     @Override
     public void nextValidId(int orderId) {
-        log.info("IBKR CONNECTED - nextValidId={}", orderId);
-        nextValidIdFuture.complete(orderId);
-    }
-
-    @Override
-    public void managedAccounts(String accountsList) {
-        log.info("MANAGED ACCOUNTS={}", accountsList);
-    }
-
-    @Override
-    public void connectAck() {
-        log.info("IB CONNECT ACK");
+        log.info("IBKR nextValidId={}", orderId);
+        if (!nextValidIdFuture.isDone()) {
+            nextValidIdFuture.complete(orderId);
+        }
     }
 
     @Override
     public void connectionClosed() {
-        log.warn("IB CONNECTION CLOSED");
+        log.error("IBKR CONNECTION CLOSED");
+        events.publishEvent(new ConnectionClosedEvent());
     }
 
     @Override
     public void error(int id, long time, int code, String msg, String advancedReject) {
-        // هذه رسائل "حالة" طبيعية
-        if (code == 2104 || code == 2107 || code == 2158) {
-            log.info("IB INFO | code={} msg={}", code, msg);
+        // Informational codes
+        if (code == 2104 || code == 2106 || code == 2107 || code == 2158) {
+            log.debug("IB INFO | code={} msg={}", code, msg);
             return;
         }
-        log.error("IB ERROR | id={} time={} code={} msg={} advancedReject={}",
-                id, time, code, msg, advancedReject);
+        // Order rejection codes (200=No security def, 201=rejected, 202=cancelled, 399=warning)
+        log.error("IB ERROR | id={} code={} msg={} reject={}", id, code, msg, advancedReject);
+
+        // فشل market data → كمل futures بـ exception
+        CompletableFuture<Double> a = askFutures.remove(id);
+        if (a != null && !a.isDone()) a.completeExceptionally(new RuntimeException("IB error " + code + ": " + msg));
+        CompletableFuture<Double> b = bidFutures.remove(id);
+        if (b != null && !b.isDone()) b.completeExceptionally(new RuntimeException("IB error " + code + ": " + msg));
+
+        events.publishEvent(new IbErrorEvent(id, code, msg));
     }
 
-    @Override
-    public void error(Exception e) {
-        log.error("IB ERROR (Exception)", e);
-    }
-
-    @Override
-    public void error(String str) {
-        log.error("IB ERROR (String) | {}", str);
-    }
-
-    // ASK snapshot: field==2
-    // BID = field 1
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attribs) {
         if (price <= 0) return;
-
         if (field == 1) { // BID
             CompletableFuture<Double> f = bidFutures.remove(tickerId);
             if (f != null && !f.isDone()) f.complete(price);
-        }
-
-        if (field == 2) { // ASK
+        } else if (field == 2) { // ASK
             CompletableFuture<Double> f = askFutures.remove(tickerId);
             if (f != null && !f.isDone()) f.complete(price);
         }
     }
 
-
     @Override
     public void contractDetails(int reqId, ContractDetails details) {
         CompletableFuture<ContractDetails> f = contractDetailsFutures.get(reqId);
-        if (f != null && !f.isDone()) {
-            // أول نتيجة تكفينا
-            f.complete(details);
-        }
+        if (f != null && !f.isDone()) f.complete(details);
     }
 
     @Override
     public void contractDetailsEnd(int reqId) {
         CompletableFuture<Void> end = contractDetailsEndFutures.get(reqId);
-        if (end != null && !end.isDone()) {
-            end.complete(null);
-        }
+        if (end != null && !end.isDone()) end.complete(null);
     }
 
     @Override
     public void orderStatus(int orderId, String status, Decimal filled, Decimal remaining,
                             double avgFillPrice, long permId, int parentId, double lastFillPrice,
                             int clientId, String whyHeld, double mktCapPrice) {
-        log.info("ORDER STATUS | id={} status={} filled={} remaining={} avgFillPrice={} lastFillPrice={}",
-                orderId, status, filled, remaining, avgFillPrice, lastFillPrice);
+        log.info("ORDER STATUS | id={} status={} filled={} remaining={} avg={}",
+                orderId, status, filled, remaining, avgFillPrice);
+        events.publishEvent(new OrderStatusEvent(
+                orderId, status,
+                filled.value().doubleValue(),
+                remaining.value().doubleValue(),
+                avgFillPrice, lastFillPrice, whyHeld
+        ));
     }
 
     @Override
     public void execDetails(int reqId, Contract contract, Execution execution) {
-        log.info("EXECUTION | orderId={} execId={} price={} qty={}",
+        log.info("EXEC | orderId={} execId={} price={} qty={}",
                 execution.orderId(), execution.execId(), execution.price(), execution.shares());
+        events.publishEvent(new ExecutionEvent(
+                execution.orderId(),
+                execution.execId(),
+                execution.price(),
+                execution.shares().value().doubleValue(),
+                contract.conid()
+        ));
     }
+
+    // ===== Local event records =====
+    public record ConnectionClosedEvent() {}
+    public record IbErrorEvent(int id, int code, String message) {}
 
     // ============ Stubs (required by your EWrapper) ============
     @Override public void tickSize(int var1, int var2, Decimal var3) {}

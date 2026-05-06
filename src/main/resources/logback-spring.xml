@@ -62,3 +62,53 @@
         <appender-ref ref="CONSOLE"/>
     </root>
 </configuration>
+
+
+        <?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+<springProperty name="appName" source="spring.application.name" defaultValue="SPX"/>
+
+<!-- Console: JSON for production, plain for dev. Toggle via SPRING_PROFILES_ACTIVE -->
+<appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+        <customFields>{"app":"${appName}"}</customFields>
+        <includeMdcKeyName>dealId</includeMdcKeyName>
+        <includeMdcKeyName>orderId</includeMdcKeyName>
+        <includeMdcKeyName>messageId</includeMdcKeyName>
+    </encoder>
+</appender>
+
+<appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+        <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} %X - %msg%n</pattern>
+    </encoder>
+</appender>
+
+<!-- File rolling: keep 14 days of JSON logs for forensic analysis -->
+<appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>logs/spx-bot.json</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+        <fileNamePattern>logs/spx-bot-%d{yyyy-MM-dd}.%i.json.gz</fileNamePattern>
+        <maxFileSize>50MB</maxFileSize>
+        <maxHistory>14</maxHistory>
+        <totalSizeCap>2GB</totalSizeCap>
+    </rollingPolicy>
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+        <customFields>{"app":"${appName}"}</customFields>
+    </encoder>
+</appender>
+
+<springProfile name="prod">
+    <root level="INFO">
+        <appender-ref ref="CONSOLE_JSON"/>
+        <appender-ref ref="FILE_JSON"/>
+    </root>
+</springProfile>
+
+<springProfile name="!prod">
+    <root level="INFO">
+        <appender-ref ref="CONSOLE_PLAIN"/>
+    </root>
+</springProfile>
+</configuration>
+

@@ -9,7 +9,14 @@ import java.time.Instant;
 import java.time.LocalDate;
 
 @Entity
-@Table(name = "deals")
+@Table(
+        name = "deals",
+        indexes = {
+                @Index(name = "idx_deals_status", columnList = "status"),
+                @Index(name = "idx_deals_telegram_msg", columnList = "telegram_message_id"),
+                @Index(name = "idx_deals_created_at", columnList = "created_at")
+        }
+)
 @Getter
 @Setter
 public class Deal {
@@ -18,66 +25,77 @@ public class Deal {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // SPXW - SPX
-    private String symbol;
+    @Version
+    private Long version; // optimistic locking — يمنع race condition بين threads
 
-    // CALL - PUT
+    private String symbol;          // SPXW
+
     @Column(name = "option_type")
-    private String optionType;
+    private String optionType;      // CALL | PUT
 
     private BigDecimal strike;
 
     @Column(name = "expiry_date")
     private LocalDate expiryDate;
 
-    // PREPARE - ENTERED - CANCELLED - CLOSED
     @Enumerated(EnumType.STRING)
     private DealStatus status;
 
-    // Setup price
     @Column(name = "prepare_price")
     private BigDecimal preparePrice;
 
-    // Price from the third case (ENTRY)
     @Column(name = "entry_signal_price")
     private BigDecimal entrySignalPrice;
 
-    // Actual execution price in Alpaca (documentation only)
     @Column(name = "entry_price")
-    private BigDecimal entryPrice;
+    private BigDecimal entryPrice;          // actual fill price
 
-    // Minimum entry limit
     @Column(name = "entry_min_price")
     private BigDecimal entryMinPrice;
 
-    // Maximum entry limit
     @Column(name = "entry_max_price")
     private BigDecimal entryMaxPrice;
 
-    // Profit target (from signal price only)
     @Column(name = "tp_price")
     private BigDecimal tpPrice;
 
-    // Stop loss (from signal price only)
     @Column(name = "sl_price")
     private BigDecimal slPrice;
 
-    // Last known price
     @Column(name = "current_price")
     private BigDecimal currentPrice;
 
-    // Preparation message number
-    @Column(name = "telegram_message_id")
+    @Column(name = "telegram_message_id", unique = true)
     private Long telegramMessageId;
 
-    @Column(name = "alpaca_entry_order_id")
-    private String alpacaEntryOrderId;
+    // ========= IBKR fields (not Alpaca) =========
+    @Column(name = "ibkr_contract_id")
+    private Integer ibkrContractId;         // conId — ضروري للخروج
 
-    @Column(name = "alpaca_tp_order_id")
-    private String alpacaTpOrderId;
+    @Column(name = "ibkr_entry_order_id")
+    private Integer ibkrEntryOrderId;
 
-    @Column(name = "alpaca_sl_order_id")
-    private String alpacaSlOrderId;
+    @Column(name = "ibkr_tp_order_id")
+    private Integer ibkrTpOrderId;
+
+    @Column(name = "ibkr_sl_order_id")
+    private Integer ibkrSlOrderId;
+
+    @Column(name = "ibkr_exit_order_id")
+    private Integer ibkrExitOrderId;
+
+    // ========= Execution metadata =========
+    @Column(name = "filled_qty")
+    private Integer filledQty;
+
+    @Column(name = "signal_received_at")
+    private Instant signalReceivedAt;
+
+    @Column(name = "order_sent_at")
+    private Instant orderSentAt;
+
+    @Column(name = "filled_at")
+    private Instant filledAt;
 
     @Column(name = "created_at", updatable = false)
     private Instant createdAt;

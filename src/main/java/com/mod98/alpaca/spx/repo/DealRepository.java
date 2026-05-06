@@ -3,6 +3,8 @@ package com.mod98.alpaca.spx.repo;
 import com.mod98.alpaca.spx.domain.Deal;
 import com.mod98.alpaca.spx.domain.DealStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -15,10 +17,8 @@ public interface DealRepository extends JpaRepository<Deal, Long> {
 
     List<Deal> findByStatusIn(List<DealStatus> statuses);
 
-    // آخر صفقة PREPARE
     List<Deal> findByStatusOrderByCreatedAtDesc(DealStatus status);
 
-    // جاهزة، لو حبيت تستعمل مطابقة كاملة على العقد (مستقبلاً مع OpenCV)
     List<Deal> findByStatusAndSymbolAndStrikeAndOptionTypeAndExpiryDateOrderByCreatedAtDesc(
             DealStatus status,
             String symbol,
@@ -26,4 +26,17 @@ public interface DealRepository extends JpaRepository<Deal, Long> {
             String optionType,
             LocalDate expiryDate
     );
+
+    /**
+     * يبحث عن صفقة بأي من order ids الأربعة (entry/tp/sl/exit).
+     * مفيد للـ OrderTrackingService.
+     */
+    @Query("""
+           SELECT d FROM Deal d
+           WHERE d.ibkrEntryOrderId = :orderId
+              OR d.ibkrTpOrderId    = :orderId
+              OR d.ibkrSlOrderId    = :orderId
+              OR d.ibkrExitOrderId  = :orderId
+           """)
+    Optional<Deal> findByAnyOrderId(@Param("orderId") Integer orderId);
 }

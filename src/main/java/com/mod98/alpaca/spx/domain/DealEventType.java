@@ -1,10 +1,16 @@
 package com.mod98.alpaca.spx.domain;
 
 public enum DealEventType {
-
     PREPARE_CREATED,
     PREPARE_UPDATED,
     ENTRY_SIGNAL_RECEIVED,
+    ENTRY_BLOCKED_OUT_OF_RANGE,    // كان مفقود
+    ENTRY_BLOCKED_NO_PREPARE,      // محاولة دخول بدون تجهيز
+    ENTRY_BLOCKED_DUPLICATE,       // signal مكرر
+    ENTRY_ORDER_PLACED,            // كان مفقود
+    ENTRY_ORDER_REJECTED,
+    ENTRY_ORDER_TIMEOUT,
+    ENTRY_PARTIAL_FILL,
     ENTRY_FILLED,
     TP_PLACED,
     SL_PLACED,
@@ -13,6 +19,11 @@ public enum DealEventType {
     TP_HIT,
     SL_HIT,
     MANUAL_EXIT,
+    EXIT_ORDER_PLACED,
+    EXIT_FILLED,
     RECOVERY_START,
-    RECOVERY_DONE
+    RECOVERY_DONE,
+    IBKR_DISCONNECTED,
+    IBKR_RECONNECTED,
+    EXECUTION_ERROR
 }
