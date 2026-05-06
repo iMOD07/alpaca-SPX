@@ -1,3 +1,5 @@
+-- to run Script
+-- psql -U postgres -v ON_ERROR_STOP=1 -f create_database.sql
 -- ========================================
 -- 1. Create the database (run as postgres)
 -- ========================================
