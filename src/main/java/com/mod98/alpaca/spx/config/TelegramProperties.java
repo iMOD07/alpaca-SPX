@@ -13,5 +13,6 @@ public class TelegramProperties {
     private int apiId;
     private String apiHash;
     private String phone;
+    private long channelTelegramId;
     private String sessionDir = "./telegram-session";
 }

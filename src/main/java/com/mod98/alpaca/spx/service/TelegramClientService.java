@@ -1,6 +1,7 @@
 package com.mod98.alpaca.spx.service;
 
 import com.mod98.alpaca.spx.config.TelegramProperties;
+import com.mod98.alpaca.spx.service.telegram.TelegramMessageHandler;
 import it.tdlight.client.*;
 import it.tdlight.jni.TdApi;
 import jakarta.annotation.PostConstruct;
@@ -11,55 +12,66 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
+import java.util.Map;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
-public class TelegramLoginService {
+public class TelegramClientService {
 
-    private static final Logger log = LoggerFactory.getLogger(TelegramLoginService.class);
+    private static final Logger log = LoggerFactory.getLogger(TelegramClientService.class);
 
     private final TelegramProperties props;
+    private final TelegramMessageHandler messageHandler;
+
     private SimpleTelegramClientFactory factory;
     private SimpleTelegramClient client;
 
-    public TelegramLoginService(TelegramProperties props) {
+    // نخزّن هنا الرسائل اللي فيها صور بانتظار ما تتحمّل الملفات بالكامل
+    // key = fileId من تيليجرام
+    private final Map<Integer, TdApi.Message> pendingPhotoMessages = new ConcurrentHashMap<>();
+
+    public TelegramClientService(TelegramProperties props,
+                                 TelegramMessageHandler messageHandler) {
         this.props = props;
+        this.messageHandler = messageHandler;
     }
 
     @PostConstruct
     public void startLogin() {
         try {
-            // 1) API Token
             APIToken apiToken = new APIToken(props.getApiId(), props.getApiHash());
 
-            // 2) TDLib settings and session storage paths (ensure dirs exist + writable)
             TDLibSettings td = TDLibSettings.create(apiToken);
-            Path base = ensureSessionDirs(props.getSessionDir()); // creates <base>/db and <base>/files if missing
+            Path base = ensureSessionDirs(props.getSessionDir());
             td.setDatabaseDirectoryPath(base.resolve("db"));
             td.setDownloadedFilesDirectoryPath(base.resolve("files"));
 
-            // 3) Build client and add handlers
             factory = new SimpleTelegramClientFactory();
             SimpleTelegramClientBuilder builder = factory.builder(td);
 
-            // 3.a) Authorization flow
+            // Auth states
             builder.addUpdateHandler(TdApi.UpdateAuthorizationState.class, this::onAuthUpdate);
+
+            // رسائل جديدة
             builder.addUpdateHandler(TdApi.UpdateNewMessage.class, this::onNewMessage);
 
-            // 3.b) Connection-state logs (useful for 24/7 bots)
+            // تحديثات الملفات (تنزيل الصور)
+            builder.addUpdateHandler(TdApi.UpdateFile.class, this::onUpdateFile);
+
+            // Log connection state
             builder.addUpdateHandler(TdApi.UpdateConnectionState.class, u ->
                     log.info("TDLib connection state: {}", u.state.getClass().getSimpleName())
             );
 
-            // 4) Auth source: user phone (first run will ask for code/2FA; next runs use saved session)
             AuthenticationSupplier<?> auth = AuthenticationSupplier.user(props.getPhone());
-
             client = builder.build(auth);
 
             log.info("Telegram TDLight client started — waiting for authorization…");
 
         } catch (Throwable t) {
-            log.error("Failed to launch the Telegram client for login purposes. API will continue without Telegram.", t);
+            log.error("Failed to launch the Telegram client.", t);
         }
     }
 
@@ -69,10 +81,8 @@ public class TelegramLoginService {
                 : sessionDir;
 
         Path base = Paths.get(dir).toAbsolutePath();
-        // Create base, db, files
         Files.createDirectories(base.resolve("db"));
         Files.createDirectories(base.resolve("files"));
-        // Writability checks
         if (!Files.isWritable(base)) {
             throw new IllegalStateException("Session dir not writable: " + base);
         }
@@ -84,33 +94,27 @@ public class TelegramLoginService {
         var st = upd.authorizationState;
 
         if (st instanceof TdApi.AuthorizationStateWaitCode) {
-            // First run: will ask for login code
             log.warn("Authorization: WAIT CODE — Enter login code:");
             System.out.print("Enter Telegram login code: ");
             String code = new Scanner(System.in).nextLine().trim();
             client.send(new TdApi.CheckAuthenticationCode(code));
 
         } else if (st instanceof TdApi.AuthorizationStateWaitPassword) {
-            // If 2FA enabled
             log.warn("Authorization: WAIT 2FA PASSWORD — Enter your two-step verification password:");
             System.out.print("Enter 2FA password: ");
             String password = new Scanner(System.in).nextLine();
             client.send(new TdApi.CheckAuthenticationPassword(password));
 
         } else if (st instanceof TdApi.AuthorizationStateWaitOtherDeviceConfirmation conf) {
-            // QR confirmation from another device
-            log.info("Authorization: WAIT QR CONFIRMATION → Open the link and approve: {}", conf.link);
+            log.info("Authorization: WAIT QR CONFIRMATION → {}", conf.link);
 
         } else if (st instanceof TdApi.AuthorizationStateReady) {
-            // Login successful — session saved; next launches won't ask for code unless session dir is removed
             log.info("Authorization: READY ✅ — Session saved at: {}", props.getSessionDir());
-            log.info("Bot stays online 24/7 and will keep listening for updates.");
 
         } else if (st instanceof TdApi.AuthorizationStateClosed) {
             log.info("Authorization: CLOSED — Client closed by TDLib.");
 
         } else if (st instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
-            // Usually auto-provided by AuthenticationSupplier.user(phone)
             log.info("Authorization: WAIT PHONE NUMBER — Will use: {}", props.getPhone());
 
         } else {
@@ -119,29 +123,68 @@ public class TelegramLoginService {
     }
 
     private void onNewMessage(TdApi.UpdateNewMessage upd) {
-
         TdApi.Message msg = upd.message;
 
-        if (msg.chatId != -5005203628L) { // 5005203628
+       // قناة عناد فقط
+       // long targetChatId = props.getChannelTelegramId();
+       //if (msg.chatId != targetChatId) {
+       //  return;
+       //}
+
+        if (msg.chatId != -5005203628L ) {
             return;
         }
 
-        if (!(msg.content instanceof TdApi.MessagePhoto photoMsg)) {
-            return;
+        log.info("📩 Telegram delivered message at: {}", Instant.now());
+
+        // لو الرسالة صورة (الكارد)
+        if (msg.content instanceof TdApi.MessagePhoto photoMsg) {
+            TdApi.PhotoSize size = photoMsg.photo.sizes[photoMsg.photo.sizes.length - 1];
+            int fileId = size.photo.id;
+
+            // نخزّن الرسالة بانتظار تحميل الصورة
+            pendingPhotoMessages.put(fileId, msg);
+
+            // نطلب من TDLib تحميل الملف
+            TdApi.DownloadFile df = new TdApi.DownloadFile(fileId, 32, 0, 0, true);
+            client.send(df);
+
+            log.info("📥 Requested download for fileId={} (messageId={})", fileId, msg.id);
+        } else {
+            // رسالة نصية فقط (إلغاء، تحديث أمر، خروج يدوي…)
+            try {
+                messageHandler.onTelegramMessage(msg, null);
+            } catch (Exception e) {
+                log.error("Error while handling text-only Telegram message {}", msg.id, e);
+            }
         }
-
-        TdApi.PhotoSize size = photoMsg.photo.sizes[photoMsg.photo.sizes.length - 1];
-        int fileId = size.photo.id;
-
-        log.info("📸 Received photo with fileId: {}", fileId);
-
-        // We only request the download (no callback)
-        TdApi.DownloadFile df = new TdApi.DownloadFile(fileId, 32, 0, 0, true);
-        client.send(df);
-
-        log.info("📥 Requested download for fileId={}", fileId);
     }
 
+    private void onUpdateFile(TdApi.UpdateFile upd) {
+        TdApi.File file = upd.file;
+
+        // ما يهمنا إلا لما يكتمل التحميل
+        if (!file.local.isDownloadingCompleted) {
+            return;
+        }
+
+        int fileId = file.id;
+        TdApi.Message msg = pendingPhotoMessages.remove(fileId);
+        if (msg == null) {
+            // ملف مو من الصور اللي نتابعها (نعطيه سكيب)
+            return;
+        }
+
+        String localPath = file.local.path;
+        log.info("✅ Photo downloaded fileId={} path={} (messageId={})", fileId, localPath, msg.id);
+
+        try {
+            // الآن فقط: الرسالة + الصورة الجاهزة نرسلهم للهاندلر
+            messageHandler.onTelegramMessage(msg, localPath);
+        } catch (Exception e) {
+            log.error("Error while handling Telegram photo message {} after download", msg.id, e);
+        }
+    }
 
     @PreDestroy
     public void stop() {

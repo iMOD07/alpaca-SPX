@@ -33,9 +33,28 @@
         </repository>
     </repositories>
 
-    <!-- TDLight BOM -->
+    <!-- dependencyManagement -->
+
     <dependencyManagement>
         <dependencies>
+
+            <!-- Google Protobuf runtime -->
+            <dependency>
+                <groupId>com.google.protobuf</groupId>
+                <artifactId>protobuf-java</artifactId>
+                <version>4.28.2</version>
+            </dependency>
+
+            <!-- AWS SDK Rekognition-->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>2.32.17</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- TDLight BOM -->
             <dependency>
                 <groupId>it.tdlight</groupId>
                 <artifactId>tdlight-java-bom</artifactId>
@@ -43,7 +62,8 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-        </dependencies>
+
+            </dependencies>
     </dependencyManagement>
 
     <!--====================================================================================================-->
@@ -152,6 +172,37 @@
             <artifactId>okhttp</artifactId>
             <version>4.12.0</version>
         </dependency>
+
+        <!-- AWS Rekognition OCR (SDK v2) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>rekognition</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>auth</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>regions</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.ibkr</groupId>
+            <artifactId>ibapi</artifactId>
+            <version>10.41.0</version>
+        </dependency>
+
+        <!-- Google Protobuf runtime -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>4.29.3</version>
+        </dependency>
+
+
 
 
     </dependencies>
