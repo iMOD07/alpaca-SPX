@@ -17,7 +17,8 @@ public class AppSettings {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    //private Long id;
+    private Integer id;
 
     @Column(name = "ai_enabled", nullable = false)
     private boolean aiEnabled;

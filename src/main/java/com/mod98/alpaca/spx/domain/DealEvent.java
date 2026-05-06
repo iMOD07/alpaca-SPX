@@ -28,9 +28,8 @@ public class DealEvent {
     @Column(name = "event_price")
     private BigDecimal eventPrice;
 
-    // The message of the Enad channel as is
-    @Lob
-    @Column(name = "raw_message")
+    // Use PostgreSQL TEXT (no @Lob — يتجنب oid/CLOB streaming overhead)
+    @Column(name = "raw_message", columnDefinition = "TEXT")
     private String rawMessage;
 
     @Column(name = "created_at", updatable = false)
@@ -40,5 +39,4 @@ public class DealEvent {
     void onCreate() {
         this.createdAt = Instant.now();
     }
-
 }

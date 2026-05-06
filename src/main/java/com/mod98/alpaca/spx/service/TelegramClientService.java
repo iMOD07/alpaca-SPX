@@ -125,15 +125,27 @@ public class TelegramClientService {
     private void onNewMessage(TdApi.UpdateNewMessage upd) {
         TdApi.Message msg = upd.message;
 
+        log.info("🔍 RAW chatId={} msgId={}", msg.chatId, msg.id);
+        log.info("🔍 EXPECTED chatId from props={}", props.getChannelTelegramId());
+
+        if (msg.chatId != props.getChannelTelegramId()) {
+            log.info("🔍 IGNORED — mismatch");
+            return;
+        }
+        // ... باقي الكود
+
+
+
        // قناة عناد فقط
        // long targetChatId = props.getChannelTelegramId();
        //if (msg.chatId != targetChatId) {
        //  return;
        //}
 
-        if (msg.chatId != -5005203628L ) {
-            return;
-        }
+//        if (msg.chatId != -3970356976L ) {
+//            // 3970356976
+//            return;
+//        }
 
         log.info("📩 Telegram delivered message at: {}", Instant.now());
 
