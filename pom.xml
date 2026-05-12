@@ -87,6 +87,15 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- For Linux x86_64 (AWS Intel/AMD servers) -->
+        <dependency>
+            <groupId>it.tdlight</groupId>
+            <artifactId>tdlight-natives</artifactId>
+            <classifier>linux_amd64_gnu_ssl3</classifier>
+            <scope>runtime</scope>
+        </dependency>
+
+
         <!-- TDLight Java API -->
         <dependency>
             <groupId>it.tdlight</groupId>
