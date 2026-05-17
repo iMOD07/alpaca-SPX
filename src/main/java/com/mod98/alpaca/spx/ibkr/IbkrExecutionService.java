@@ -17,13 +17,14 @@ import java.math.RoundingMode;
  * IBKR Execution — يحتوي فقط على عمليات الإرسال للأوامر.
  *
  * مسؤوليات الكلاس:
- *  - placeEntryWithReservedId: BUY LMT (تستقبل orderId و contract محجوزَين مسبقاً من EntrySignalHandler).
+ *  - placeEntryWithReservedId: BUY LMT (تستقبل orderId و contract محجوزَين مسبقاً من EntryHandler).
  *  - placeBracket: TP + SL كـ OCA group بعد ENTRY filled.
+ *  - modifyStopLoss / modifyTakeProfit: تعديل رجل bracket عبر UpdateHandler.
  *  - closeDealPosition: SELL marketable LMT للخروج اليدوي.
  *  - cancelOrder: إلغاء أمر معلّق.
  *
  * ملاحظة:
- *  - resolveContract يحدث في EntrySignalHandler.preFlight (لذا لا نحتاج IbkrContractService هنا).
+ *  - resolveContract يحدث في EntryHandler (لذا لا نحتاج IbkrContractService هنا).
  *  - status updates تتم في OrderTrackingService بناءً على callbacks من IBKR (لا تتم هنا).
  */
 @Slf4j
@@ -144,7 +145,7 @@ public class IbkrExecutionService {
     }
 
     // =========================================================
-    // MANUAL EXIT — يُستدعى من ManualExitHandler
+    // MANUAL EXIT — يُستدعى من CancelHandler (إغلاق صفقة مفتوحة)
     // =========================================================
     public int closeDealPosition(Deal deal, String reason) {
         if (!conn.isConnected()) {
@@ -179,6 +180,62 @@ public class IbkrExecutionService {
 
         conn.getClient().placeOrder(orderId, contract, o);
         return orderId;
+    }
+
+    // =========================================================
+    // MODIFY BRACKET LEG — يُستدعى من UpdateHandler عند رسالة "تعديل"
+    //
+    // IBKR modify = إعادة placeOrder بنفس orderId مع قيم جديدة.
+    // نحافظ على نفس OCA group ("deal-{id}") حتى تبقى TP/SL مرتبطين
+    // (تنفيذ أحدهما يلغي الآخر).
+    // =========================================================
+
+    /** عدّل سعر وقف الخسارة (SL STP) لصفقة مفتوحة. */
+    public void modifyStopLoss(Deal deal, BigDecimal newStopPrice) {
+        Order sl = baseBracketLeg(deal);
+        sl.orderType("STP");
+        sl.auxPrice(newStopPrice.doubleValue());
+        int slId = requireBracketId(deal.getIbkrSlOrderId(), deal.getId(), "SL");
+        sl.orderId(slId);
+        log.info("MODIFY SL | dealId={} slId={} newStop={}", deal.getId(), slId, newStopPrice);
+        conn.getClient().placeOrder(slId, buildContractFromConId(deal.getIbkrContractId()), sl);
+    }
+
+    /** عدّل سعر جني الأرباح (TP LMT) لصفقة مفتوحة. */
+    public void modifyTakeProfit(Deal deal, BigDecimal newTpPrice) {
+        Order tp = baseBracketLeg(deal);
+        tp.orderType("LMT");
+        tp.lmtPrice(newTpPrice.doubleValue());
+        int tpId = requireBracketId(deal.getIbkrTpOrderId(), deal.getId(), "TP");
+        tp.orderId(tpId);
+        log.info("MODIFY TP | dealId={} tpId={} newTp={}", deal.getId(), tpId, newTpPrice);
+        conn.getClient().placeOrder(tpId, buildContractFromConId(deal.getIbkrContractId()), tp);
+    }
+
+    /** أساس مشترك لرجل bracket — نفس الإعدادات المستخدمة في placeBracket. */
+    private Order baseBracketLeg(Deal deal) {
+        if (!conn.isConnected()) {
+            throw new IllegalStateException("IBKR not connected");
+        }
+        if (deal.getIbkrContractId() == null) {
+            throw new IllegalStateException("conId missing on deal " + deal.getId());
+        }
+        Order o = new Order();
+        o.action("SELL");
+        o.totalQuantity(Decimal.get(trading.getOptionQty()));
+        o.tif("GTC");
+        o.ocaGroup("deal-" + deal.getId());
+        o.ocaType(1);          // CANCEL_WITH_BLOCK — يطابق placeBracket
+        o.transmit(true);
+        return o;
+    }
+
+    private int requireBracketId(Integer id, Long dealId, String leg) {
+        if (id == null) {
+            throw new IllegalStateException(
+                    leg + " order id missing on deal " + dealId + " — cannot modify");
+        }
+        return id;
     }
 
     // =========================================================

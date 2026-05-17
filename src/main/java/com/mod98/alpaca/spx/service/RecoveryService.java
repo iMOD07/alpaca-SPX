@@ -75,13 +75,11 @@ public class RecoveryService {
             }
         }
 
-        // 3) PREPARE — لو قديمة (> prepare-validity) ستُلغى تلقائياً عند ENTRY check
-        List<Deal> preparing = dealRepository.findByStatusIn(List.of(DealStatus.PREPARE));
-        log.info("🔄 RecoveryService: {} PREPARE deals will be checked for validity on next ENTRY",
-                preparing.size());
+        // (PREPARE حالة أُزيلت — الـ pipeline الجديد لا يحتوي رسائل تجهيز تُخزَّن
+        //  كـ Deal؛ رسائل "خليك جاهز/مراقب" تُسقَط في MessageShapeGate.)
 
-        log.info("🔄 RecoveryService: complete — {} pending→FAILED, {} entered checked, {} prepare",
-                pending.size(), entered.size(), preparing.size());
+        log.info("🔄 RecoveryService: complete — {} pending→FAILED, {} entered checked",
+                pending.size(), entered.size());
     }
 
     private void recordEvent(Deal deal, DealEventType type, String message) {

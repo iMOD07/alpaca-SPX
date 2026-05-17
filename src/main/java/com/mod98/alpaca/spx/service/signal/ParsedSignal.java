@@ -1,42 +1,58 @@
-// src/main/java/com/mod98/alpaca/spx/service/signal/ParsedSignal.java
 package com.mod98.alpaca.spx.service.signal;
 
 import com.mod98.alpaca.spx.domain.SignalType;
-import lombok.Getter;
-import lombok.Setter;
+import lombok.Builder;
+import lombok.Value;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
-@Getter
-@Setter
+/**
+ * نتيجة تحليل الرسالة — immutable.
+ *
+ * Invariants:
+ *  - signalType != null
+ *  - telegramMessageId != null
+ *  - For ENTRY:  optionType, strike, expiryDate, entryPrice REQUIRED
+ *  - For UPDATE: replyToMessageId REQUIRED + at least one of (newEntry/newSL/newTP)
+ *  - For CANCEL: replyToMessageId REQUIRED
+ */
+@Value
+@Builder
 public class ParsedSignal {
 
-    // PREPARE / ENTRY / PRICE_ALERT / CANCEL / UPDATE / ...
-    private SignalType signalType;
+    SignalType signalType;
+    Long telegramMessageId;
+    Long replyToMessageId;
+    String rawText;
 
-    // SPXW
-    private String symbol;
-    // CALL / PUT
-    private String optionType;
-    private BigDecimal strike;
-    private LocalDate expiryDate;
-    // Preparation (1 + 2)
-    private BigDecimal preparePrice;
-    // From "Entry"
-    private BigDecimal entrySignalPrice;
-    // From "Update Command X.Y"
-    private BigDecimal updatePrice;
-    // From the good news
-    private BigDecimal priceAlert;
-    private Long telegramMessageId;
-    // If it was a reply
-    private Long replyToMessageId;
-    private String rawText;
+    // ENTRY data
+    String symbol;            // SPXW
+    String optionType;        // CALL | PUT
+    BigDecimal strike;
+    LocalDate expiryDate;
+    BigDecimal entryPrice;    // السعر اللحظي للأوبشن من الإشارة
 
-    // Optional: raw SL/TP إن عناد ذكرها في النص – لا تغير منطق TP/SL الذهبي
-    private BigDecimal stopLossFromSignal;
+    // UPDATE data (any of these can be set)
+    BigDecimal newEntry;
+    BigDecimal newStopLoss;
+    BigDecimal newTakeProfit;
 
-    private BigDecimal takeProfitFromSignal;
+    public boolean isValidEntry() {
+        return signalType == SignalType.ENTRY
+                && optionType != null
+                && strike != null
+                && expiryDate != null
+                && entryPrice != null
+                && entryPrice.signum() > 0;
+    }
 
+    public boolean isValidReply() {
+        return (signalType == SignalType.UPDATE || signalType == SignalType.CANCEL)
+                && replyToMessageId != null;
+    }
+
+    public boolean hasUpdateData() {
+        return newEntry != null || newStopLoss != null || newTakeProfit != null;
+    }
 }
