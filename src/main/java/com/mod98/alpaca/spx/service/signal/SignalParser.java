@@ -14,18 +14,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Parser صارم — يستخرج بيانات العقد من السطر الأول للـ OCR فقط.
+ * Parser موحّد لرسائل قناة عناد.
  *
- * Strategy v2.2:
- *   - OCR card header دائماً في السطر الأول: "SPXW $6,845  28 Nov 25 (W) Call 100"
- *   - السعر اللحظي في السطر الثاني: "3.30 +0.80 +32.00%"
- *   - أي شي بعد كذا (Open, High, Low, Volume) = نتجاهله نهائياً
+ * Authority: النص فقط. الصور تُتجاهَل تماماً (watermark كثيف يفسد OCR).
  *
- * Authority:
- *   - النص (caption) = decision + optionType
- *   - السطر الأول من OCR = symbol + strike + expiry
- *   - السطر الثاني من OCR = price
- *   - باقي الـ OCR = IGNORED
+ * Inputs handled:
+ *   1. PREP    → استخراج: optionType, strike, entryPrice, expiry
+ *   2. ENTRY   → استخراج: optionType فقط (الباقي يجي من PREP المطابقة)
+ *   3. REPLY   → CANCEL / تعديل تاريخ / تعديل strike
  */
 @Slf4j
 @Component
@@ -33,181 +29,152 @@ import java.util.regex.Pattern;
 public class SignalParser {
 
     // =========================================================
-    // KEYWORDS
-    // =========================================================
-    private static final Pattern ENTRY_TRIGGER = Pattern.compile(
-            "\\b(دخول|ادخل|🟢\\s*دخول)\\b", Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern TYPE_FROM_TEXT = Pattern.compile(
-            "\\b(call|put|كول|بوت)\\b", Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern CANCEL_KEYWORDS = Pattern.compile(
-            "\\b(الغ(?:اء|ي|)|إلغاء|ignore|cancel|skip|لا\\s*تدخل|اخرج|خروج|بيع|exit|close)\\b",
-            Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern UPDATE_KEYWORDS = Pattern.compile(
-            "\\b(تعديل|تحديث|update|modify|change)\\b", Pattern.CASE_INSENSITIVE);
-
-    // =========================================================
-    // STRICT OCR HEADER — السطر الأول فقط
+    // PREP PATTERNS
     // =========================================================
 
-    /**
-     * يطابق السطر الأول من card فقط:
-     *   "SPXW $6,845  28 Nov 25 (W) Call 100"
-     *   "SPXW $6,845 28 Nov 25 (W)Call 100"
-     *   "SPXW 6845 28-Nov-25 Call"
-     *
-     * Groups: (1)=SPX/SPXW (2)=strike (3)=day (4)=month (5)=year (6)=Call/Put
-     */
-    private static final Pattern CARD_HEADER_LINE = Pattern.compile(
-            "^\\s*(SPXW?)\\s*\\$?(\\d{4,5}(?:,\\d{3})?)\\s+" +     // SPXW $6,845
-                    "(\\d{1,2})[\\s\\-]+([A-Za-z]{3,9})[\\s\\-]+(\\d{2,4})" +    // 28 Nov 25
-                    "\\s*\\(?W?\\)?\\s*" +                                    // (W) optional
-                    "(Call|Put)",                                              // Call/Put
-            Pattern.CASE_INSENSITIVE);
+    /** نوع العقد من PREP: "🟢 عقد CALL 🟢" أو "🔴 عقد PUT 🔴" */
+    private static final Pattern PREP_OPTION_TYPE = Pattern.compile(
+            "عقد\\s*(CALL|PUT)",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
-    /**
-     * السعر اللحظي — السطر اللي فيه price + (change).
-     * يقبل فقط أرقام صغيرة (< 1000) لأن سعر الأوبشن كذا.
-     */
-    private static final Pattern LIVE_PRICE_LINE = Pattern.compile(
-            "^\\s*(\\d{1,3}\\.\\d{2})\\s*[+\\-]?\\d*\\.?\\d*\\s*$",
-            Pattern.MULTILINE);
+    /** Strike من PREP: "🎯 استرايك : 7470" */
+    private static final Pattern PREP_STRIKE = Pattern.compile(
+            "(?:استرايك|إسترايك)\\s*[:：]\\s*(\\d{4,5})",
+            Pattern.UNICODE_CASE);
 
-    /** Inline price in caption: "@ 3.30" or "بسعر 3.30" */
-    private static final Pattern INLINE_PRICE = Pattern.compile(
-            "(?:بسعر|سعر|@|price|at)\\s*[:：]?\\s*(\\d{1,3}(?:\\.\\d+)?)",
-            Pattern.CASE_INSENSITIVE);
+    /** Price من PREP: "💰 حط أمر التنفيذ بالعقد بسعر : 3.9" */
+    private static final Pattern PREP_PRICE = Pattern.compile(
+            "بسعر\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)",
+            Pattern.UNICODE_CASE);
 
-    // Update value patterns
-    private static final Pattern SL_UPDATE = Pattern.compile(
-            "\\b(?:sl|stop|stoploss|وقف(?:\\s*الخسارة)?)\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)",
-            Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern TP_UPDATE = Pattern.compile(
-            "\\b(?:tp|target|takeprofit|الهدف|هدف)\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)",
-            Pattern.CASE_INSENSITIVE);
-
-    private static final Pattern ENTRY_UPDATE = Pattern.compile(
-            "\\b(?:entry|سعر\\s*الدخول)\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)",
-            Pattern.CASE_INSENSITIVE);
+    /** التاريخ في PREP: "🗓 بتاريخ : اليوم" أو "غداً" أو "14 مايو" */
+    private static final Pattern PREP_DATE = Pattern.compile(
+            "بتاريخ\\s*[:：]?\\s*(.+?)(?:\\n|$)",
+            Pattern.UNICODE_CASE);
 
     // =========================================================
-    // VALIDATION BOUNDS
+    // ENTRY PATTERNS
+    // =========================================================
+
+    /** ENTRY type: "🟢 دخول CALL 🟢" أو "🔴 دخول PUT 🔴" */
+    private static final Pattern ENTRY_OPTION_TYPE = Pattern.compile(
+            "دخول\\s*(CALL|PUT|كول|بوت)",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+    // =========================================================
+    // REPLY PATTERNS (cancel / date-fix / strike-update)
+    // =========================================================
+
+    /** Cancel reply: "إلغاء أمر التنفيذ" */
+    private static final Pattern REPLY_CANCEL = Pattern.compile(
+            "(إلغاء\\s*أمر|الغاء\\s*أمر|لم\\s*يحقق\\s*دخول)",
+            Pattern.UNICODE_CASE);
+
+    /** Date fix reply: "بتاريخ غداً 14 مايو" */
+    private static final Pattern REPLY_DATE = Pattern.compile(
+            "بتاريخ\\s*(.+)",
+            Pattern.UNICODE_CASE);
+
+    /** Strike update reply: "تحديث استرايك العقد 6920" */
+    private static final Pattern REPLY_STRIKE_UPDATE = Pattern.compile(
+            "تحديث\\s*استرايك\\s*(?:العقد)?\\s*(\\d{4,5})",
+            Pattern.UNICODE_CASE);
+
+    // =========================================================
+    // DATE KEYWORDS
+    // =========================================================
+    private static final Pattern DAY_NUMBER = Pattern.compile("(\\d{1,2})");
+
+    private static final Map<String, Integer> MONTHS_AR = Map.ofEntries(
+            Map.entry("يناير", 1),  Map.entry("فبراير", 2), Map.entry("مارس", 3),
+            Map.entry("أبريل", 4),  Map.entry("ابريل", 4),  Map.entry("مايو", 5),
+            Map.entry("يونيو", 6),  Map.entry("يوليو", 7),  Map.entry("أغسطس", 8),
+            Map.entry("اغسطس", 8),  Map.entry("سبتمبر", 9),
+            Map.entry("أكتوبر", 10), Map.entry("اكتوبر", 10),
+            Map.entry("نوفمبر", 11), Map.entry("ديسمبر", 12)
+    );
+
+    // =========================================================
+    // VALIDATION
     // =========================================================
     private static final BigDecimal STRIKE_MIN = new BigDecimal("1000");
     private static final BigDecimal STRIKE_MAX = new BigDecimal("10000");
     private static final BigDecimal PRICE_MIN = new BigDecimal("0.05");
     private static final BigDecimal PRICE_MAX = new BigDecimal("500.00");
 
-    private static final Map<String, Integer> MONTHS = Map.ofEntries(
-            Map.entry("jan", 1),  Map.entry("january", 1),
-            Map.entry("feb", 2),  Map.entry("february", 2),
-            Map.entry("mar", 3),  Map.entry("march", 3),
-            Map.entry("apr", 4),  Map.entry("april", 4),
-            Map.entry("may", 5),
-            Map.entry("jun", 6),  Map.entry("june", 6),
-            Map.entry("jul", 7),  Map.entry("july", 7),
-            Map.entry("aug", 8),  Map.entry("august", 8),
-            Map.entry("sep", 9),  Map.entry("september", 9),
-            Map.entry("oct", 10), Map.entry("october", 10),
-            Map.entry("nov", 11), Map.entry("november", 11),
-            Map.entry("dec", 12), Map.entry("december", 12)
-    );
-
     // =========================================================
     // PUBLIC API
     // =========================================================
 
-    public ParsedSignal parseEntry(String text, String ocr, Long messageId) {
+    /**
+     * Parse PREP message:
+     *   "🟢 عقد CALL 🟢
+     *    🗓 بتاريخ : اليوم
+     *    🎯 استرايك : 7470
+     *    💰 حط أمر التنفيذ بالعقد بسعر : 3.9
+     *    ❌ لا تنفذ اعلى من سعر التنفيذ"
+     */
+    public ParsedSignal parsePrep(String text, Long messageId) {
         String t = normalize(text);
-        String o = normalize(ocr);
 
-        // ⚠️ Print OCR للـ debugging — يساعد لو في issue
-        log.info("📝 OCR CONTENT for msgId={}:\n=====OCR-START=====\n{}\n=====OCR-END=====",
-                messageId, o);
+        String optionType = matchOptionType(PREP_OPTION_TYPE, t);
+        BigDecimal strike = matchDecimal(PREP_STRIKE, t);
+        BigDecimal price = matchDecimal(PREP_PRICE, t);
+        LocalDate expiry = parseDateFromPrep(t);
 
-        // Safety net
-        if (!ENTRY_TRIGGER.matcher(t).find()) {
-            log.warn("parseEntry: no entry trigger | msgId={}", messageId);
+        if (optionType == null || strike == null || price == null || expiry == null) {
+            log.warn("PREP incomplete | msgId={} type={} strike={} price={} expiry={}",
+                    messageId, optionType, strike, price, expiry);
             return null;
         }
-
-        // ===========================================
-        // STEP 1: optionType من النص
-        // ===========================================
-        String optionType = extractTypeFromText(t);
-        if (optionType == null) {
-            optionType = extractTypeFromText(o);
-        }
-        if (optionType == null) {
-            log.warn("parseEntry: SKIP — no CALL/PUT anywhere | msgId={}", messageId);
-            return null;
-        }
-
-        // ===========================================
-        // STEP 2: parse الـ OCR سطر بسطر (صارم)
-        // ===========================================
-        OcrCard card = parseOcrLineByLine(o);
-
-        if (card.strike == null || card.expiry == null) {
-            log.warn("parseEntry: SKIP — OCR card header not found | msgId={} ocrLen={}",
-                    messageId, o.length());
-            return null;
-        }
-
-        log.info("✅ Card parsed | symbol={} strike={} expiry={} type={}",
-                card.symbol, card.strike, card.expiry, card.cardType);
-
-        // ===========================================
-        // STEP 3: السعر
-        // ===========================================
-        BigDecimal price = extractInlinePrice(t);   // النص أولاً
-        if (price == null) price = card.price;       // ثم OCR price line
-
-        // ===========================================
-        // STEP 4: التحقق إن النص والصورة متفقين على type
-        // ===========================================
-        if (card.cardType != null && !card.cardType.equalsIgnoreCase(optionType)) {
-            log.warn("⚠️ Type mismatch: text={} card={} — using TEXT (authoritative)",
-                    optionType, card.cardType);
-        }
-
-        // ===========================================
-        // STEP 5: VALIDATION صارم
-        // ===========================================
-        if (!isValidStrike(card.strike)) {
-            log.warn("parseEntry: SKIP — strike out of bounds [{}] | msgId={}", card.strike, messageId);
-            return null;
-        }
-        if (price == null || !isValidPrice(price)) {
-            log.warn("parseEntry: SKIP — invalid price [{}] | msgId={}", price, messageId);
-            return null;
-        }
-        if (!isValidExpiry(card.expiry)) {
-            log.warn("parseEntry: SKIP — invalid expiry [{}] | msgId={}", card.expiry, messageId);
+        if (!isValidStrike(strike) || !isValidPrice(price) || !isValidExpiry(expiry)) {
+            log.warn("PREP invalid values | msgId={} strike={} price={} expiry={}",
+                    messageId, strike, price, expiry);
             return null;
         }
 
         return ParsedSignal.builder()
-                .signalType(SignalType.ENTRY)
+                .signalType(SignalType.PREP)
                 .telegramMessageId(messageId)
-                .symbol(card.symbol)
+                .symbol("SPXW")
                 .optionType(optionType)
-                .strike(card.strike)
-                .expiryDate(card.expiry)
+                .strike(strike)
                 .entryPrice(price)
-                .rawText(text + "\n---OCR---\n" + ocr)
+                .expiryDate(expiry)
+                .rawText(text)
                 .build();
     }
 
+    /**
+     * Parse ENTRY message — استخراج optionType فقط.
+     * الباقي يأتي من PREP المطابقة في DB.
+     */
+    public ParsedSignal parseEntry(String text, Long messageId) {
+        String t = normalize(text);
+        String optionType = matchOptionType(ENTRY_OPTION_TYPE, t);
+        if (optionType == null) {
+            log.warn("ENTRY: option type not found | msgId={}", messageId);
+            return null;
+        }
+        return ParsedSignal.builder()
+                .signalType(SignalType.ENTRY)
+                .telegramMessageId(messageId)
+                .optionType(optionType)
+                .rawText(text)
+                .build();
+    }
+
+    /**
+     * Parse REPLY message (cancel / date fix / strike update).
+     * يتجاهل SL/TP updates لأن المستخدم ثابت على $100.
+     */
     public ParsedSignal parseReply(String text, Long messageId, Long replyToId) {
         if (replyToId == null) return null;
         String t = normalize(text);
         if (t.isBlank()) return null;
 
-        if (CANCEL_KEYWORDS.matcher(t).find()) {
+        // 1) CANCEL
+        if (REPLY_CANCEL.matcher(t).find()) {
             return ParsedSignal.builder()
                     .signalType(SignalType.CANCEL)
                     .telegramMessageId(messageId)
@@ -216,154 +183,131 @@ public class SignalParser {
                     .build();
         }
 
-        BigDecimal newSL = matchValue(SL_UPDATE, t);
-        BigDecimal newTP = matchValue(TP_UPDATE, t);
-        BigDecimal newEntry = matchValue(ENTRY_UPDATE, t);
-
-        if (UPDATE_KEYWORDS.matcher(t).find() || newSL != null || newTP != null || newEntry != null) {
+        // 2) Strike update
+        Matcher sm = REPLY_STRIKE_UPDATE.matcher(t);
+        if (sm.find()) {
+            BigDecimal newStrike = new BigDecimal(sm.group(1));
+            if (!isValidStrike(newStrike)) return null;
             return ParsedSignal.builder()
                     .signalType(SignalType.UPDATE)
                     .telegramMessageId(messageId)
                     .replyToMessageId(replyToId)
-                    .newEntry(newEntry)
-                    .newStopLoss(newSL)
-                    .newTakeProfit(newTP)
+                    .strike(newStrike)
                     .rawText(text)
                     .build();
         }
+
+        // 3) Date fix
+        Matcher dm = REPLY_DATE.matcher(t);
+        if (dm.find()) {
+            String dateText = dm.group(1).trim();
+            LocalDate newExpiry = parseRelativeDate(dateText);
+            if (newExpiry != null && isValidExpiry(newExpiry)) {
+                return ParsedSignal.builder()
+                        .signalType(SignalType.UPDATE)
+                        .telegramMessageId(messageId)
+                        .replyToMessageId(replyToId)
+                        .expiryDate(newExpiry)
+                        .rawText(text)
+                        .build();
+            }
+        }
+
+        // 4) SL/TP updates → نتجاهل (نلتزم بـ $100)
+        log.debug("Reply ignored — no actionable content | msgId={} text={}",
+                messageId, t.substring(0, Math.min(t.length(), 80)));
         return null;
     }
 
     // =========================================================
-    // CORE: parse OCR سطر بسطر
+    // DATE PARSING
     // =========================================================
-    private OcrCard parseOcrLineByLine(String ocr) {
-        OcrCard card = new OcrCard();
-        if (ocr == null || ocr.isBlank()) return card;
 
-        String[] lines = ocr.split("\\r?\\n");
+    private LocalDate parseDateFromPrep(String text) {
+        Matcher m = PREP_DATE.matcher(text);
+        if (!m.find()) return null;
+        return parseRelativeDate(m.group(1).trim());
+    }
 
-        // أول 3 أسطر فقط — لأن card header دائماً في الأعلى
-        int maxLines = Math.min(lines.length, 5);
+    private LocalDate parseRelativeDate(String dateText) {
+        if (dateText == null || dateText.isBlank()) return null;
+        String d = dateText.trim();
+        LocalDate today = LocalDate.now();
 
-        for (int i = 0; i < maxLines; i++) {
-            String line = lines[i].trim();
-            if (line.isEmpty()) continue;
+        // "اليوم"
+        if (d.contains("اليوم")) return today;
+        // "غداً" / "غدا"
+        if (d.contains("غداً") || d.contains("غدا")) return today.plusDays(1);
 
-            // محاولة 1: card header
-            if (card.strike == null) {
-                Matcher m = CARD_HEADER_LINE.matcher(line);
-                if (m.find()) {
-                    card.symbol = m.group(1).toUpperCase(Locale.ROOT);
-                    if (!card.symbol.equals("SPXW")) card.symbol = "SPXW";  // normalize SPX→SPXW
-
-                    String strikeStr = m.group(2).replace(",", "");
-                    card.strike = parseDecimal(strikeStr);
-
-                    try {
-                        int day = Integer.parseInt(m.group(3));
-                        String monthName = m.group(4).toLowerCase(Locale.ROOT);
-                        int year = Integer.parseInt(m.group(5));
-                        if (year < 100) year += 2000;
-                        Integer month = MONTHS.get(monthName);
-                        if (month != null) {
-                            card.expiry = LocalDate.of(year, month, day);
-                        }
-                    } catch (Exception e) {
-                        log.warn("Date parse failed in line: [{}]", line);
-                    }
-                    card.cardType = m.group(6).toUpperCase(Locale.ROOT);
-                    continue;
-                }
+        // "14 مايو" / "14 أبريل" / "20 أبريل"
+        int day = -1;
+        Integer month = null;
+        for (Map.Entry<String, Integer> e : MONTHS_AR.entrySet()) {
+            if (d.contains(e.getKey())) {
+                month = e.getValue();
+                break;
             }
-
-            // محاولة 2: السعر اللحظي (3.30 +0.80 etc)
-            if (card.price == null) {
-                Matcher pm = LIVE_PRICE_LINE.matcher(line);
-                if (pm.find()) {
-                    BigDecimal candidate = parseDecimal(pm.group(1));
-                    // فلتر: السعر يجب يكون في نطاق معقول للأوبشن
-                    if (candidate != null && isValidPrice(candidate)) {
-                        card.price = candidate;
-                    }
-                }
-            }
-
-            // لو لقينا strike + expiry + price → خلاص
-            if (card.strike != null && card.expiry != null && card.price != null) break;
+        }
+        Matcher dm = DAY_NUMBER.matcher(d);
+        if (dm.find()) {
+            try { day = Integer.parseInt(dm.group(1)); } catch (Exception ignored) {}
         }
 
-        return card;
+        if (month != null && day >= 1 && day <= 31) {
+            int year = today.getYear();
+            // لو الـ date محسوبة في الماضي، خذ السنة الجاية
+            try {
+                LocalDate candidate = LocalDate.of(year, month, day);
+                if (candidate.isBefore(today.minusDays(7))) {
+                    candidate = LocalDate.of(year + 1, month, day);
+                }
+                return candidate;
+            } catch (Exception e) {
+                log.warn("Invalid date: day={} month={}", day, month);
+            }
+        }
+
+        return null;
     }
 
     // =========================================================
     // HELPERS
     // =========================================================
 
-    private String extractTypeFromText(String text) {
-        if (text == null || text.isBlank()) return null;
-        Matcher m = TYPE_FROM_TEXT.matcher(text);
+    private String matchOptionType(Pattern p, String text) {
+        Matcher m = p.matcher(text);
         if (!m.find()) return null;
-        String token = m.group(1).toUpperCase(Locale.ROOT);
-        return switch (token) {
+        String t = m.group(1).toUpperCase(Locale.ROOT);
+        return switch (t) {
             case "CALL", "كول" -> "CALL";
             case "PUT", "بوت"  -> "PUT";
             default -> null;
         };
     }
 
-    private BigDecimal extractInlinePrice(String text) {
-        if (text == null || text.isBlank()) return null;
-        Matcher m = INLINE_PRICE.matcher(text);
-        if (m.find()) {
-            BigDecimal p = parseDecimal(m.group(1));
-            return (p != null && isValidPrice(p)) ? p : null;
-        }
-        return null;
-    }
-
-    private BigDecimal matchValue(Pattern p, String text) {
+    private BigDecimal matchDecimal(Pattern p, String text) {
         Matcher m = p.matcher(text);
-        if (m.find()) return parseDecimal(m.group(1));
-        return null;
+        if (!m.find()) return null;
+        try { return new BigDecimal(m.group(1)); } catch (Exception e) { return null; }
     }
 
-    private BigDecimal parseDecimal(String s) {
-        try { return new BigDecimal(s); } catch (Exception e) { return null; }
+    private boolean isValidStrike(BigDecimal s) {
+        return s != null && s.compareTo(STRIKE_MIN) >= 0 && s.compareTo(STRIKE_MAX) <= 0;
     }
 
-    private boolean isValidStrike(BigDecimal strike) {
-        return strike != null
-                && strike.compareTo(STRIKE_MIN) >= 0
-                && strike.compareTo(STRIKE_MAX) <= 0;
+    private boolean isValidPrice(BigDecimal p) {
+        return p != null && p.compareTo(PRICE_MIN) >= 0 && p.compareTo(PRICE_MAX) <= 0;
     }
 
-    private boolean isValidPrice(BigDecimal price) {
-        return price != null
-                && price.compareTo(PRICE_MIN) >= 0
-                && price.compareTo(PRICE_MAX) <= 0;
-    }
-
-    /**
-     * Expiry validation:
-     *  - مش في الماضي
-     *  - مش سبت/أحد (الأسواق مغلقة)
-     *  - أقل من 365 يوم في المستقبل
-     */
-    private boolean isValidExpiry(LocalDate expiry) {
-        if (expiry == null) return false;
+    private boolean isValidExpiry(LocalDate e) {
+        if (e == null) return false;
         LocalDate today = LocalDate.now();
-        if (expiry.isBefore(today)) return false;
-        if (expiry.isAfter(today.plusDays(365))) return false;
-        DayOfWeek dow = expiry.getDayOfWeek();
-        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) {
-            log.warn("Expiry on weekend: {} ({})", expiry, dow);
-            return false;
-        }
-        return true;
+        if (e.isBefore(today)) return false;
+        if (e.isAfter(today.plusDays(365))) return false;
+        DayOfWeek dow = e.getDayOfWeek();
+        return dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY;
     }
 
-    /** Normalize Arabic-Indic digits + whitespace + keep newlines. */
     private String normalize(String text) {
         if (text == null) return "";
         StringBuilder sb = new StringBuilder(text.length());
@@ -372,16 +316,6 @@ public class SignalParser {
             else if (c >= '۰' && c <= '۹') sb.append((char) ('0' + (c - '۰')));
             else sb.append(c);
         }
-        // احفظ الـ newlines (مهمة للـ line-by-line parsing!)
-        return sb.toString().replaceAll("[ \\t]+", " ").trim();
-    }
-
-    /** نتيجة parse OCR card. */
-    private static class OcrCard {
-        String symbol;
-        BigDecimal strike;
-        LocalDate expiry;
-        String cardType;     // CALL/PUT من الصورة (للتحقق فقط)
-        BigDecimal price;
+        return sb.toString().replaceAll("[ \\t]+", " ");
     }
 }

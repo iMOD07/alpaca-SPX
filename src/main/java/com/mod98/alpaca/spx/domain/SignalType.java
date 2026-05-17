@@ -1,14 +1,8 @@
 package com.mod98.alpaca.spx.domain;
 
-/**
- * أنواع الإشارات المدعومة (مبسّطة — بدون PREPARE).
- *
- * ENTRY: قرار دخول مباشر — يجب أن يحوي قرار + بيانات عقد كاملة.
- * UPDATE: تعديل على Deal موجودة (entry/SL/TP) عبر Reply.
- * CANCEL: إلغاء Deal لم تُنفّذ بعد، أو إغلاق Deal مفتوحة.
- */
 public enum SignalType {
-    ENTRY,
-    UPDATE,
-    CANCEL
+    PREP,       // رسالة تجهيز من admin (تُحفظ في pending_entries)
+    ENTRY,      // قرار دخول من البوت (يستهلك PREP)
+    UPDATE,     // Reply: تحديث تاريخ أو strike على PREP
+    CANCEL      // Reply: إلغاء PREP أو إغلاق صفقة مفتوحة
 }
