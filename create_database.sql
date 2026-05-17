@@ -64,11 +64,12 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO imod98;
 -- ========================================
 
 -- AppSettings.java:
---   id          Long    → BIGINT (was SERIAL → INT, fixed)
+--   id          Integer → INTEGER  (entity uses Integer + GenerationType.IDENTITY,
+--                                    so column must be SERIAL/int4, NOT BIGSERIAL)
 --   aiEnabled   boolean → BOOLEAN
---   updatedAt   Instant → TIMESTAMPTZ (was TIMESTAMP, fixed)
+--   updatedAt   Instant → TIMESTAMPTZ
 CREATE TABLE IF NOT EXISTS app_settings (
-    id          BIGSERIAL   PRIMARY KEY,
+    id          SERIAL      PRIMARY KEY,
     ai_enabled  BOOLEAN     NOT NULL,
     updated_at  TIMESTAMPTZ NOT NULL
 );
