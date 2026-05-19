@@ -157,10 +157,8 @@ public class OrderTrackingService {
         }
     }
 
-    /**
-     * Idempotent exit handler:
-     *  - يتأكد إن الـ deal مش CLOSED مسبقاً قبل الانتقال
-     */
+
+
     private void handleExitFilled(Deal deal, DealEventType type, OrderStatusEvent ev) {
         if (deal.getStatus() == DealStatus.CLOSED) {
             log.debug("Ignoring duplicate exit event | dealId={} type={}", deal.getId(), type);
@@ -181,11 +179,9 @@ public class OrderTrackingService {
                 deal.getId(), type, deal.getEntryPrice(), exitPrice, deal.getFilledQty(), pnl);
     }
 
-    /**
-     * Watchdog: يلغي ENTRY_PENDING orders بعد timeout — لكن فقط أثناء market hours.
-     * أثناء إغلاق السوق، نترك الأمر معلّقاً (سيُنفّذ عند الفتح أو يُلغى لاحقاً).
-     */
-    @Scheduled(fixedDelay = 5000)   // كل 5 ثوان (أبطأ من السابق — لا حاجة لكل 1s)
+
+
+    @Scheduled(fixedDelay = 5000)
     @Transactional
     public void checkPendingTimeouts() {
         List<Deal> pending = dealRepository.findByStatusIn(List.of(DealStatus.ENTRY_PENDING));
