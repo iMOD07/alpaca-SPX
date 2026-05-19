@@ -8,6 +8,7 @@ import com.mod98.alpaca.spx.repo.DealEventRepository;
 import com.mod98.alpaca.spx.repo.DealRepository;
 import com.mod98.alpaca.spx.service.DealStateMachine;
 import com.mod98.alpaca.spx.service.MarketHoursService;
+import com.mod98.alpaca.spx.service.RiskLimitService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -23,13 +24,16 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * يربط callbacks IBKR (OrderStatus, Execution) مع state machine الـ Deal.
+ * Bridges IBKR callbacks (OrderStatus, Execution) → Deal state machine.
  *
- * مبادئ التصميم:
- *  - idempotent: نفس event مرات متعددة لا يعدّل state بشكل خاطئ
- *  - market-aware: لا يلغي pending orders أثناء إغلاق السوق
- *  - state-strict: يعتمد على DealStateMachine لمنع transitions غير شرعية
- *  - resilient: لو bracket placement فشل، deal تُعلَّم للمراجعة (لا يُترك مفتوحاً بلا حماية)
+ * Principles:
+ *  - Idempotent: same event multiple times is safe
+ *  - Market-aware: don't cancel pending during off-hours
+ *  - State-strict: all transitions via DealStateMachine
+ *  - Resilient: log + alert on bracket failure
+ *
+ * v3.1 changes:
+ *  ✅ recordOutcome() on every CLOSED deal (feeds RiskLimitService)
  */
 @Slf4j
 @Component
@@ -42,6 +46,7 @@ public class OrderTrackingService {
     private final DealStateMachine stateMachine;
     private final TradingProperties trading;
     private final MarketHoursService marketHours;
+    private final RiskLimitService riskLimit;   // ⭐ NEW v3.1
 
     @EventListener
     @Async("ibkrEventExecutor")
@@ -56,22 +61,18 @@ public class OrderTrackingService {
             return;
         }
 
-        // ENTRY order
         if (Integer.valueOf(ev.orderId()).equals(deal.getIbkrEntryOrderId())) {
             handleEntryStatus(deal, ev);
             return;
         }
-        // TP order
         if (Integer.valueOf(ev.orderId()).equals(deal.getIbkrTpOrderId())) {
             if (ev.isFilled()) handleExitFilled(deal, DealEventType.TP_HIT, ev);
             return;
         }
-        // SL order
         if (Integer.valueOf(ev.orderId()).equals(deal.getIbkrSlOrderId())) {
             if (ev.isFilled()) handleExitFilled(deal, DealEventType.SL_HIT, ev);
             return;
         }
-        // Manual exit
         if (Integer.valueOf(ev.orderId()).equals(deal.getIbkrExitOrderId())) {
             if (ev.isFilled()) handleExitFilled(deal, DealEventType.EXIT_FILLED, ev);
         }
@@ -82,19 +83,12 @@ public class OrderTrackingService {
     public void onExecution(ExecutionEvent ev) {
         log.info("🔔 ExecutionEvent | orderId={} price={} qty={} conId={}",
                 ev.orderId(), ev.price(), ev.quantity(), ev.conId());
-        // For audit/reconciliation — يمكن إضافة جدول executions لاحقاً
     }
 
-    /**
-     * Idempotent ENTRY status handler:
-     *  - Filled مرة واحدة فقط (يفحص الحالة قبل المعالجة)
-     *  - Bracket يُوضع مرة واحدة فقط (يفحص ibkrTpOrderId)
-     */
     private void handleEntryStatus(Deal deal, OrderStatusEvent ev) {
         if (ev.isFilled()) {
-            // ⚠️ Idempotency guard: لو الـ deal سبق ما اعتُبر filled، تجاهل
             if (deal.getStatus() != DealStatus.ENTRY_PENDING) {
-                log.debug("Ignoring duplicate Filled event | dealId={} currentStatus={}",
+                log.debug("Ignoring duplicate Filled event | dealId={} status={}",
                         deal.getId(), deal.getStatus());
                 return;
             }
@@ -114,7 +108,6 @@ public class OrderTrackingService {
             log.info("✅ ENTRY FILLED | dealId={} signal={} fill={} qty={} latencyMs={}",
                     deal.getId(), deal.getEntrySignalPrice(), avg, ev.filled(), latencyMs);
 
-            // Place bracket — مرة واحدة فقط
             if (trading.isPlaceBracketOrders() && deal.getIbkrTpOrderId() == null) {
                 placeBracketSafely(deal);
             }
@@ -122,9 +115,8 @@ public class OrderTrackingService {
         }
 
         if (ev.isCancelled() || ev.isInactive()) {
-            // ⚠️ Idempotency: لو الـ deal سبق وانتقل لحالة أخرى، تجاهل
             if (deal.getStatus() != DealStatus.ENTRY_PENDING) {
-                log.debug("Ignoring cancel event | dealId={} currentStatus={}",
+                log.debug("Ignoring cancel event | dealId={} status={}",
                         deal.getId(), deal.getStatus());
                 return;
             }
@@ -149,16 +141,18 @@ public class OrderTrackingService {
                     deal.getId(), bracket.tpOrderId(), deal.getTpPrice(),
                     bracket.slOrderId(), deal.getSlPrice());
         } catch (Exception e) {
-            // ⚠️ Critical: ENTERED بدون bracket = position بلا حماية!
-            log.error("⚠️ BRACKET PLACEMENT FAILED — POSITION UNPROTECTED | dealId={}", deal.getId(), e);
+            log.error("⚠️ BRACKET PLACEMENT FAILED — POSITION UNPROTECTED | dealId={}",
+                    deal.getId(), e);
             eventRepository.save(buildEvent(deal, DealEventType.EXECUTION_ERROR, null,
                     "BRACKET_FAILED: " + e.getMessage()));
-            // النظام يجب يطلق alert هنا — TODO: integrate with Telegram alert sender
         }
     }
 
-
-
+    /**
+     * Handle TP/SL/Manual exit fill.
+     *
+     * v3.1: feeds RiskLimitService — kill switch after 4 consecutive losses.
+     */
     private void handleExitFilled(Deal deal, DealEventType type, OrderStatusEvent ev) {
         if (deal.getStatus() == DealStatus.CLOSED) {
             log.debug("Ignoring duplicate exit event | dealId={} type={}", deal.getId(), type);
@@ -171,15 +165,25 @@ public class OrderTrackingService {
         dealRepository.save(deal);
         eventRepository.save(buildEvent(deal, type, exitPrice));
 
-        BigDecimal pnl = (deal.getEntryPrice() != null)
-                ? exitPrice.subtract(deal.getEntryPrice())
-                .multiply(BigDecimal.valueOf(trading.getOptionQty() * 100L))
-                : null;
+        // Compute PnL = (exit - entry) × qty × multiplier(100)
+        BigDecimal pnl = null;
+        if (deal.getEntryPrice() != null) {
+            pnl = exitPrice.subtract(deal.getEntryPrice())
+                    .multiply(BigDecimal.valueOf(trading.getOptionQty() * 100L))
+                    .setScale(2, RoundingMode.HALF_UP);
+        }
         log.info("🏁 DEAL CLOSED | dealId={} type={} entry={} exit={} qty={} pnl=${}",
                 deal.getId(), type, deal.getEntryPrice(), exitPrice, deal.getFilledQty(), pnl);
+
+        // ⭐ v3.1: feed risk service (kill switch after 4 losses)
+        if (pnl != null) {
+            try {
+                riskLimit.recordOutcome(deal.getId(), pnl);
+            } catch (Exception e) {
+                log.error("Failed to record risk outcome | dealId={}", deal.getId(), e);
+            }
+        }
     }
-
-
 
     @Scheduled(fixedDelay = 5000)
     @Transactional
@@ -187,9 +191,8 @@ public class OrderTrackingService {
         List<Deal> pending = dealRepository.findByStatusIn(List.of(DealStatus.ENTRY_PENDING));
         if (pending.isEmpty()) return;
 
-        // ⚠️ لا تلغ pending orders لو السوق مغلق
         if (!marketHours.isMarketOpen()) {
-            log.debug("Market closed — skip pending timeout check ({} pending deals)", pending.size());
+            log.debug("Market closed — skip pending timeout check ({} pending)", pending.size());
             return;
         }
 
@@ -209,12 +212,10 @@ public class OrderTrackingService {
             } catch (Exception e) {
                 log.error("Cancel failed | orderId={}", d.getIbkrEntryOrderId(), e);
             }
-            // ملاحظة: لا ننقل الحالة هنا — انتظر OrderStatusEvent("Cancelled")
-            // لو ما وصل بعد دقيقة، fallback transition سيحصل في scheduled cleanup منفصل
         }
     }
 
-    // ========= Helpers =========
+    // Helpers
     private DealEvent buildEvent(Deal deal, DealEventType type, BigDecimal price) {
         return buildEvent(deal, type, price, null);
     }

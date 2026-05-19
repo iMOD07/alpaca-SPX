@@ -12,21 +12,16 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 /**
- * عند startup — يكتشف ويعالج deals "العالقة" من crash سابق.
+ * Recovery on startup — handle stranded deals from previous crash/restart.
  *
- * الإجراءات:
- *  1. ENTRY_PENDING من قبل crash → علّمها FAILED للمراجعة اليدوية.
- *     السبب: لا نعرف هل الأمر فعلاً وصل لـ IBKR أم لا. الأنسب أن يُراجع المستخدم.
+ * v3.1 changes:
+ *  ✅ Uses DealStateMachine for transitions (no direct setStatus)
+ *  ⚠️ Still relies on DB as source of truth (IBKR reconciliation = future improvement)
  *
- *  2. ENTERED بدون TP/SL orderId → log + alert (موقف خطر — position بلا حماية).
- *     لا نضع bracket تلقائياً لأن السعر تغيّر، يحتاج قرار بشري.
- *
- *  3. ENTERED مع TP/SL orderId — افترض إنها لا تزال نشطة في IBKR.
- *     OrderTrackingService سيتعامل مع callbacks عند fill.
- *
- * ⚠️ لإنتاجية أعلى:
- *   - استدعِ reqOpenOrders() و reqPositions() من IBKR للمطابقة الفعلية.
- *   - حالياً نعتمد على DB كـ source of truth — كافي للـ paper trading.
+ * Actions:
+ *  1. ENTRY_PENDING from before crash → mark FAILED (needs manual review in TWS)
+ *  2. ENTERED without bracket → log error (position UNPROTECTED, manual intervention)
+ *  3. ENTERED with bracket → assume healthy, OrderTrackingService picks up callbacks
  */
 @Slf4j
 @Service
@@ -35,29 +30,27 @@ public class RecoveryService {
 
     private final DealRepository dealRepository;
     private final DealEventRepository eventRepository;
+    private final DealStateMachine stateMachine;   // ⭐ NEW v3.1
 
     @PostConstruct
     @Transactional
     public void onStartup() {
         log.info("🔄 RecoveryService: scanning for stranded deals from previous run...");
 
-        // 1) ENTRY_PENDING — مات النظام أثناء انتظار fill
+        // 1) ENTRY_PENDING — crashed while awaiting fill
         List<Deal> pending = dealRepository.findByStatusIn(List.of(DealStatus.ENTRY_PENDING));
         for (Deal d : pending) {
             log.error("⚠️ RECOVERY: dealId={} was ENTRY_PENDING at shutdown | orderId={} signalAt={}",
                     d.getId(), d.getIbkrEntryOrderId(), d.getSignalReceivedAt());
 
-            // علّمها FAILED — تحتاج مراجعة بشرية:
-            //  - هل الأمر فعلاً نُفّذ في IBKR؟ (فحص يدوي في TWS)
-            //  - لو نُفّذ، ضع bracket يدوياً
-            //  - لو لم يُنفّذ، ألغِها
-            d.setStatus(DealStatus.FAILED);
+            // ✅ Use state machine
+            stateMachine.transition(d, DealStatus.FAILED);
             dealRepository.save(d);
             recordEvent(d, DealEventType.RECOVERY_START,
-                    "ENTRY_PENDING at startup — needs manual review");
+                    "ENTRY_PENDING at startup — needs manual review in TWS");
         }
 
-        // 2) ENTERED بدون bracket — position بلا حماية
+        // 2) ENTERED without bracket — UNPROTECTED position
         List<Deal> entered = dealRepository.findByStatusIn(List.of(DealStatus.ENTERED));
         for (Deal d : entered) {
             boolean unprotected = (d.getIbkrTpOrderId() == null) || (d.getIbkrSlOrderId() == null);
@@ -65,18 +58,14 @@ public class RecoveryService {
                 log.error("⚠️ RECOVERY: dealId={} ENTERED without bracket! tpId={} slId={}",
                         d.getId(), d.getIbkrTpOrderId(), d.getIbkrSlOrderId());
                 recordEvent(d, DealEventType.EXECUTION_ERROR,
-                        "Recovery: ENTERED without bracket — manual intervention required");
-                // ⚠️ لا تضع bracket تلقائياً عند startup —
-                // السعر/السوق ربما تغيّرا، يحتاج قرار بشري
+                        "Recovery: ENTERED without bracket — manual intervention required in TWS");
+                // ⚠️ DO NOT auto-place bracket at startup — price has changed, needs human review
             } else {
                 log.info("✓ RECOVERY: dealId={} ENTERED with bracket tpId={} slId={}",
                         d.getId(), d.getIbkrTpOrderId(), d.getIbkrSlOrderId());
                 recordEvent(d, DealEventType.RECOVERY_DONE, "ENTERED+bracket — assumed healthy");
             }
         }
-
-        // (PREPARE حالة أُزيلت — الـ pipeline الجديد لا يحتوي رسائل تجهيز تُخزَّن
-        //  كـ Deal؛ رسائل "خليك جاهز/مراقب" تُسقَط في MessageShapeGate.)
 
         log.info("🔄 RecoveryService: complete — {} pending→FAILED, {} entered checked",
                 pending.size(), entered.size());
