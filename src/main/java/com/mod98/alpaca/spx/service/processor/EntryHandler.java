@@ -9,6 +9,8 @@ import com.mod98.alpaca.spx.ibkr.IbkrOrderIdService;
 import com.mod98.alpaca.spx.repo.DealEventRepository;
 import com.mod98.alpaca.spx.repo.DealRepository;
 import com.mod98.alpaca.spx.repo.PendingEntryRepository;
+import com.mod98.alpaca.spx.service.BuyingPowerService;
+import com.mod98.alpaca.spx.service.ConcurrentDealsGuard;
 import com.mod98.alpaca.spx.service.DealStateMachine;
 import com.mod98.alpaca.spx.service.RiskLimitService;
 import com.mod98.alpaca.spx.service.signal.ParsedSignal;
@@ -25,19 +27,18 @@ import java.time.*;
 import java.util.List;
 
 /**
- * EntryHandler v3.1 — PREP-then-ENTRY workflow with risk management.
+ * EntryHandler v3.2 — full safety pipeline.
  *
- * Pre-flight checks (in order):
- *   1. tradingEnabled (config kill switch)
- *   2. risk kill switch (4 consecutive losses)
- *   3. IBKR connected
- *   4. Market hours (before 4 PM ET)
+ * Pre-flight checks (in order, fail-fast):
+ *   1. trading.enabled (config)
+ *   2. RiskLimit kill switch (4 consec losses)
+ *   3. ConcurrentDealsGuard (max 3 open)
+ *   4. IBKR connected
+ *   5. Market hours (before 4 PM ET)
+ *   6. Matching PREP exists
+ *   7. BuyingPower sufficient
  *
- * Then: find matching PREP → 3-phase transactional flow.
- *
- * Changes from v3:
- *   ✅ Risk kill switch check
- *   ✅ All status changes via DealStateMachine (no bypass)
+ * Only if ALL pass → 3-phase transactional execution.
  */
 @Slf4j
 @Service
@@ -58,45 +59,46 @@ public class EntryHandler {
     private final TradingProperties trading;
     private final DealStateMachine stateMachine;
     private final RiskLimitService riskLimit;
+    private final ConcurrentDealsGuard concurrentGuard;   // ⭐ NEW v3.2
+    private final BuyingPowerService buyingPower;          // ⭐ NEW v3.2
 
     public void handle(ParsedSignal signal) {
-        // 1) Config kill switch
+        long msgId = signal.getTelegramMessageId();
+
+        // ───────────── Pre-flight checks ─────────────
         if (!trading.isTradingEnabled()) {
-            log.warn("ENTRY blocked — trading disabled in config | msgId={}",
-                    signal.getTelegramMessageId());
+            log.warn("ENTRY blocked — trading disabled in config | msgId={}", msgId);
             return;
         }
-
-        // 2) Risk kill switch (4 consecutive losses)
         if (riskLimit.isKillSwitchActive()) {
             log.error("🛑 ENTRY blocked — RISK KILL SWITCH ACTIVE | consecutive={} | msgId={}",
-                    riskLimit.getConsecutiveLosses(), signal.getTelegramMessageId());
+                    riskLimit.getConsecutiveLosses(), msgId);
             return;
         }
-
-        // 3) IBKR connectivity
+        if (!concurrentGuard.canOpenNew()) {
+            log.warn("🚫 ENTRY blocked — max concurrent deals reached ({}) | msgId={}",
+                    concurrentGuard.getMaxConcurrentDeals(), msgId);
+            return;
+        }
         if (!conn.isConnected()) {
-            log.error("ENTRY blocked — IBKR disconnected | msgId={}",
-                    signal.getTelegramMessageId());
+            log.error("ENTRY blocked — IBKR disconnected | msgId={}", msgId);
             return;
         }
 
-        // 4) Market hours
         ZonedDateTime nowET = ZonedDateTime.now(ET_ZONE);
         if (nowET.toLocalTime().isAfter(MARKET_CLOSE_ET)) {
-            log.warn("ENTRY blocked — after market close ET | msgId={}",
-                    signal.getTelegramMessageId());
+            log.warn("ENTRY blocked — after market close ET | msgId={}", msgId);
             return;
         }
 
-        // Find matching PREP (today, same option type, newest first)
+        // ───────────── Match PREP ─────────────
         Instant startOfTodayET = nowET.toLocalDate().atStartOfDay(ET_ZONE).toInstant();
         List<PendingEntry> candidates = pendingRepo
                 .findActiveByTypeOrderByNewestFirst(signal.getOptionType(), startOfTodayET);
 
         if (candidates.isEmpty()) {
             log.warn("⚠️ ENTRY skipped — no active PREP for {} today | msgId={}",
-                    signal.getOptionType(), signal.getTelegramMessageId());
+                    signal.getOptionType(), msgId);
             return;
         }
 
@@ -106,21 +108,28 @@ public class EntryHandler {
                 prep.getOptionType(), prep.getStrike(),
                 prep.getEntryPrice(), prep.getExpiryDate());
 
-        // Phase A — atomic: create deal + consume PREP
+        // ───────────── Buying Power check (after PREP match — we know the price now) ─────────────
+        BuyingPowerService.Result bpResult = buyingPower.check(prep.getEntryPrice());
+        if (bpResult != BuyingPowerService.Result.OK) {
+            log.error("🛑 ENTRY blocked — buying power check failed | result={} msgId={}",
+                    bpResult, msgId);
+            return;
+        }
+
+        // ───────────── Phase A: atomic DB write ─────────────
         Phase1Result phase1;
         try {
             phase1 = createDealAndConsumePrep(prep, signal);
         } catch (DuplicateException e) {
-            log.warn("ENTRY blocked — duplicate messageId | msgId={}",
-                    signal.getTelegramMessageId());
+            log.warn("ENTRY blocked — duplicate messageId | msgId={}", msgId);
             return;
         } catch (Exception e) {
-            log.error("Phase A failed | msgId={}", signal.getTelegramMessageId(), e);
+            log.error("Phase A failed | msgId={}", msgId, e);
             return;
         }
         if (phase1 == null) return;
 
-        // Phase B — IBKR call (no transaction; long-running)
+        // ───────────── Phase B: IBKR call (no transaction) ─────────────
         IbkrExecutionService.EntryDecisionResult result;
         try {
             result = execution.placeEntryWithReservedId(
@@ -132,7 +141,7 @@ public class EntryHandler {
             return;
         }
 
-        // Phase C — atomic: finalize
+        // ───────────── Phase C: finalize ─────────────
         finalizeResult(phase1.deal.getId(), result);
     }
 
@@ -160,7 +169,6 @@ public class EntryHandler {
 
         int reservedOrderId = orderIds.nextOrderId();
 
-        // Build Deal (status will be set via state machine)
         Deal deal = new Deal();
         deal.setSymbol("SPXW");
         deal.setOptionType(prep.getOptionType());
@@ -175,15 +183,12 @@ public class EntryHandler {
         deal.setSignalReceivedAt(Instant.now());
         deal.setOrderSentAt(Instant.now());
 
-        // ✅ Use state machine (from null → ENTRY_PENDING)
         stateMachine.transition(deal, DealStatus.ENTRY_PENDING);
         Deal saved = dealRepo.save(deal);
 
-        // Atomically consume PREP
         prep.markConsumed("matched_entry", saved.getId());
         pendingRepo.save(prep);
 
-        // Audit event
         DealEvent ev = new DealEvent();
         ev.setDeal(saved);
         ev.setEventType(DealEventType.ENTRY_SIGNAL_RECEIVED);
@@ -202,7 +207,6 @@ public class EntryHandler {
         if (!result.placed()) {
             log.warn("ENTRY blocked post-MD | dealId={} reason={}",
                     dealId, result.blockReason());
-            // ✅ Use state machine instead of direct setStatus
             stateMachine.transition(deal, DealStatus.CANCELLED);
             dealRepo.save(deal);
 

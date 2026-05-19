@@ -7,6 +7,7 @@ import com.ib.client.protobuf.ExecutionDetailsProto;
 import com.ib.client.protobuf.OpenOrderProto;
 import com.ib.client.protobuf.OpenOrdersEndProto;
 import com.ib.client.protobuf.OrderStatusProto;
+import com.mod98.alpaca.spx.ibkr.events.AccountSummaryEvent;
 import com.mod98.alpaca.spx.ibkr.events.ExecutionEvent;
 import com.mod98.alpaca.spx.ibkr.events.OrderStatusEvent;
 import lombok.extern.slf4j.Slf4j;
@@ -83,6 +84,27 @@ public class IbkrApiWrapper implements EWrapper {
         log.error("IBKR CONNECTION CLOSED");
         events.publishEvent(new ConnectionClosedEvent());
     }
+
+    /**
+     * EWrapper callback — IBKR returns one accountSummary line per requested tag.
+     * Published as Spring event for async consumption.
+     */
+    @Override
+    public void accountSummary(int reqId, String account, String tag, String value, String currency) {
+        log.debug("📊 accountSummary | reqId={} account={} tag={} value={} ccy={}",
+                reqId, account, tag, value, currency);
+        events.publishEvent(new AccountSummaryEvent(reqId, account, tag, value, currency));
+    }
+
+    /**
+     * EWrapper callback — fires when IBKR is done sending a particular reqAccountSummary batch.
+     * No action needed (we already have the value via accountSummary callback).
+     */
+    @Override
+    public void accountSummaryEnd(int reqId) {
+        log.debug("📊 accountSummaryEnd | reqId={}", reqId);
+    }
+
 
     /**
      * IBKR Error Code Categories:
@@ -243,8 +265,8 @@ public class IbkrApiWrapper implements EWrapper {
     @Override public void commissionAndFeesReport(CommissionAndFeesReport var1) {}
     @Override public void position(String var1, Contract var2, Decimal var3, double var4) {}
     @Override public void positionEnd() {}
-    @Override public void accountSummary(int var1, String var2, String var3, String var4, String var5) {}
-    @Override public void accountSummaryEnd(int var1) {}
+    //@Override public void accountSummary(int var1, String var2, String var3, String var4, String var5) {}
+    //@Override public void accountSummaryEnd(int var1) {}
     @Override public void verifyMessageAPI(String var1) {}
     @Override public void verifyCompleted(boolean var1, String var2) {}
     @Override public void verifyAndAuthMessageAPI(String var1, String var2) {}
